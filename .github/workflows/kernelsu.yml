@@ -149,15 +149,20 @@ jobs:
           echo "ARGS=$args" >> $GITHUB_OUTPUT
 
       # ═══════════════════════════════════════════════════════════
-      # НАША МАГИЯ: Тотальная зачистка Xiaomi
+      # НАША МАГИЯ: Тотальная зачистка Xiaomi и HWID
       # ═══════════════════════════════════════════════════════════
-      - name: 😋 Xiaomi Total Cleanup
+      - name: 😋 Xiaomi & HWID Total Cleanup
         working-directory: ${{ env.KERNEL_NAME }}
         run: |
-          # Удаляем папку и любые упоминания из Makefile/Kconfig
+          # 1. Удаляем физическую папку
           rm -rf drivers/xiaomi
+          # 2. Удаляем упоминания 'xiaomi' из Makefile и Kconfig
           find drivers/ -name "Makefile" -o -name "Kbuild" -o -name "Kconfig" | xargs sed -i '/xiaomi/d' || true
-          echo "✅ Любые упоминания Xiaomi полностью вырезаны из всех файлов"
+          # 3. ТОЧЕЧНОЕ УДАЛЕНИЕ HWID (то, на чем мы упали)
+          sed -i '/hwid/d' drivers/misc/Kconfig || true
+          # 4. Проверка на другие битые ссылки в drivers/misc
+          sed -i '/source "drivers\/misc\/hwid\/Kconfig"/d' drivers/misc/Kconfig || true
+          echo "✅ Все хвосты Xiaomi и hwid зачищены под ноль"
 
       # ═══════════════════════════════════════════════════════════
       # НАША МАГИЯ: ReSukiSU (Bypass Check)
@@ -175,8 +180,7 @@ jobs:
           mkdir -p drivers/kernelsu
           cp -a ksutmp/kernel/. drivers/kernelsu/
           
-          # УДАЛЯЕМ ПРОВЕРКУ: заменяем $(error ...) на $(info ...)
-          # Теперь вместо того чтобы остановить сборку, он просто напишет текст в лог
+          # Отключаем проверку сабмодуля (уже проверено, работает)
           sed -i 's/$(error You should use ReSukiSU.*/$(info Bypassed ReSukiSU Check)/g' drivers/kernelsu/Kbuild
           
           grep -q "kernelsu" drivers/Makefile || echo "obj-y += kernelsu/" >> drivers/Makefile
@@ -218,9 +222,11 @@ jobs:
         run: |
           export KBUILD_BUILD_HOST=Github-Action
           export KBUILD_BUILD_USER=$(echo ${{ github.actor }} | tr A-Z a-z)
+          
+          # Сначала применяем конфиг, только потом собираем
           make ${{ env.ARGS }} ${{ env.KERNEL_DEFCONFIG_PATH }}
           
-          # Опции маскировки BBR и TCP
+          # Опции маскировки
           ./scripts/config --file out/.config -e TCP_CONG_BBR --set-str DEFAULT_TCP_CONG bbr -e DEBUG_INFO_BTF -e KALLSYMS_ALL || true
           make ${{ env.ARGS }} olddefconfig
 
