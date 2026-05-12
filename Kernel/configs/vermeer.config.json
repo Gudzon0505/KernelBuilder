@@ -1,80 +1,53 @@
-name: Build Kernels - KernelSU (Gadzhi ReSukiSU + SUSFS Edition)
-
-on:
-  workflow_dispatch:
-
-jobs:
-  Read-configuration:
-    name: 🐂 Parse *.config.json
-    runs-on: ubuntu-latest
-    outputs:
-      CONFIGS: ${{ steps.generate-matrix.outputs.CONFIGS }}
-      BUILD_DATE: ${{ steps.generate-builddate.outputs.BUILDDATE }}
-    steps:
-      - name: 😄 Checkout
-        uses: actions/checkout@v4
-
-      - name: 😆 Generate Matrix
-        id: generate-matrix
-        run: |
-          echo "CONFIGS<<EOF" >> $GITHUB_OUTPUT
-          jq -s '[.[][]]' Kernel/configs/*.config.json >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-
-      - name: ⏰ Set builddate
-        id: generate-builddate
-        run: echo "BUILDDATE=$(date +'%Y%m%d')" >> $GITHUB_OUTPUT
-
-  Build-Kernel:
-    name: "🐎 Build kernel"
-    runs-on: ubuntu-22.04
-    needs:
-      - Read-configuration
-    strategy:
-      max-parallel: 4
-      fail-fast: false
-      matrix:
-        CONFIG: ${{ fromJSON(needs.Read-configuration.outputs.CONFIGS) }}
-    env:
-      WORKSPACE: ${{ github.workspace }}
-      BUILD_DATE: "${{ needs.Read-configuration.outputs.BUILD_DATE }}"
-      KERNEL_NAME: ${{ matrix.CONFIG.kernelSource.name }}
-      KERNEL_REPO: ${{ matrix.CONFIG.kernelSource.repo }}
-      KERNEL_BRANCH: ${{ matrix.CONFIG.kernelSource.branch }}
-      KERNEL_DEVICE: ${{ matrix.CONFIG.kernelSource.device }}
-      KERNEL_DEFCONFIG_PATH: ${{ matrix.CONFIG.kernelSource.defconfig }}
-      ENABLE_CCACHE: ${{ matrix.CONFIG.enableCcache }}
-      USE_ANYKERNEL3: ${{ matrix.CONFIG.AnyKernel3.use }}
-      CONFIRM_RELEASE: ${{ matrix.CONFIG.AnyKernel3.release }}
-      ENABLE_KERNELSU: ${{ matrix.CONFIG.enableKernelSU }}
-      ENABLE_KERNELSU_SFS: ${{ matrix.CONFIG.KernelSUSFS.enable }}
-      ENABLE_LXC: ${{ matrix.CONFIG.enableLXC }}
-      OUT_DIR: "${{ github.workspace }}/out"
-      CCACHE_DIR: "${{ github.workspace }}/ccache"
-    steps:
-      - name: 📐 Set swap to 10G
-        uses: pierotofy/set-swap-space@master
-        with:
-          swap-size-gb: 10
-
-      - name: 😄 Checkout
-        uses: actions/checkout@v4
-
-      - name: ⭐ Install prerequisites
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y curl git ftp lftp wget libarchive-tools ccache python2 python2-dev python3
-          sudo apt-get install -y pngcrush schedtool dpkg-dev liblz4-tool make optipng maven dwarves device-tree-compiler 
-          sudo apt-get install -y libc6-dev-i386 libelf-dev lib32ncurses5-dev libx11-dev lib32z-dev libgl1-mesa-dev xsltproc
-          sudo apt-get install -y libxml2-utils libbz2-dev libbz2-1.0 libghc-bzlib-dev squashfs-tools lzop flex tree
-          sudo apt-get install -y build-essential bc gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi libssl-dev libfl-dev
-          sudo apt-get install -y pwgen libswitch-perl policycoreutils minicom libxml-sax-base-perl libxml-simple-perl 
-          sudo apt-get install -y zip unzip tar gzip bzip2 rar unrar llvm g++-multilib bison gperf zlib1g-dev automake
-
-      - name: 🚄 Setup ccache
-        if: ${{ env.ENABLE_CCACHE == 'true' }}
-        id: hash
-        run: |
-          mkdir -p ${{ env.OUT_DIR }}
-          ccache -o compression=false -o cache_dir=${{ env.CCACHE_DIR }}
-          echo $(echo -n '${{ toJSON(matrix.config) }}' | openssl dgst -sha1
+[
+    {
+        "kernelSource": {
+        "name": "vermeer-kernel_xiaomi_sm8550",
+        "repo": "https://github.com/Vermeer-Development/kernel_xiaomi_sm8550.git",
+        "branch": "lineage-22.2",
+        "device": "gki",
+        "defconfig": "gki_defconfig"
+        },
+        "toolchains": [
+            {
+                "name": "clang",
+                "url": "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r547379.tar.gz",
+                "binaryEnv": ["./bin"]
+            }
+        ],
+        "enableCcache": true,
+        "params": {
+        "ARCH": "arm64",
+        "CC": "clang",
+            "externalCommands": {
+                "CROSS_COMPILE": "aarch64-linux-gnu-",
+                "CROSS_COMPILE_ARM32": "arm-linux-gnueabi-",
+                "LD": "ld.lld",
+                "AR": "llvm-ar",
+                "NM": "llvm-nm",
+                "OBJCOPY": "llvm-objcopy",
+                "OBJDUMP": "llvm-objdump",
+                "READELF": "llvm-readelf",
+                "OBJSIZE": "llvm-size",
+                "STRIP": "llvm-strip",
+                "LDGOLD": "aarch64-linux-gnu-ld.gold",
+                "LLVM_AR": "llvm-ar",
+                "LLVM_DIS": "llvm-dis",
+                "LTO": "thin"
+            }
+        },
+        "AnyKernel3": {
+            "use": true,
+            "release": true,
+            "custom": {
+                "repo": "https://github.com/WildPlusKernel/AnyKernel3.git",
+                "branch": "gki-2.0"
+            }
+        },
+        "enableLXC": false,
+        "enableKernelSU": true,
+        "KernelSUSFS": {
+            "enable": true,
+            "branches": "gki-android13-5.15"
+        }
+    }
+]
