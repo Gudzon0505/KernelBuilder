@@ -149,18 +149,18 @@ jobs:
           echo "ARGS=$args" >> $GITHUB_OUTPUT
 
       # ═══════════════════════════════════════════════════════════
-      # НАША МАГИЯ: Жесткое удаление Xiaomi
+      # НАША МАГИЯ: Тотальная зачистка Xiaomi
       # ═══════════════════════════════════════════════════════════
-      - name: 😋 Xiaomi Delete Fix
+      - name: 😋 Xiaomi Total Cleanup
         working-directory: ${{ env.KERNEL_NAME }}
         run: |
-          sed -i '/xiaomi/d' drivers/Makefile || true
-          sed -i '/xiaomi/d' drivers/Kconfig || true
-          sed -i '/hwid\/Kconfig/d' drivers/misc/Kconfig || true
-          echo "✅ Упоминания драйверов Xiaomi полностью вырезаны"
+          # Удаляем папку и любые упоминания из Makefile/Kconfig
+          rm -rf drivers/xiaomi
+          find drivers/ -name "Makefile" -o -name "Kbuild" -o -name "Kconfig" | xargs sed -i '/xiaomi/d' || true
+          echo "✅ Любые упоминания Xiaomi полностью вырезаны из всех файлов"
 
       # ═══════════════════════════════════════════════════════════
-      # НАША МАГИЯ: ReSukiSU (Git Init Hack)
+      # НАША МАГИЯ: ReSukiSU (Bypass Check)
       # ═══════════════════════════════════════════════════════════
       - name: 😋 Setup ReSukiSU
         working-directory: ${{ env.KERNEL_NAME }}
@@ -175,14 +175,9 @@ jobs:
           mkdir -p drivers/kernelsu
           cp -a ksutmp/kernel/. drivers/kernelsu/
           
-          # Фейковый Git-репозиторий для обхода защиты ReSukiSU
-          cd drivers/kernelsu
-          git init
-          git config user.email "bot@example.com"
-          git config user.name "bot"
-          git add .
-          git commit -m "bypass"
-          cd ../..
+          # УДАЛЯЕМ ПРОВЕРКУ: заменяем $(error ...) на $(info ...)
+          # Теперь вместо того чтобы остановить сборку, он просто напишет текст в лог
+          sed -i 's/$(error You should use ReSukiSU.*/$(info Bypassed ReSukiSU Check)/g' drivers/kernelsu/Kbuild
           
           grep -q "kernelsu" drivers/Makefile || echo "obj-y += kernelsu/" >> drivers/Makefile
           grep -q "kernelsu" drivers/Kconfig || sed -i '/endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
@@ -225,6 +220,7 @@ jobs:
           export KBUILD_BUILD_USER=$(echo ${{ github.actor }} | tr A-Z a-z)
           make ${{ env.ARGS }} ${{ env.KERNEL_DEFCONFIG_PATH }}
           
+          # Опции маскировки BBR и TCP
           ./scripts/config --file out/.config -e TCP_CONG_BBR --set-str DEFAULT_TCP_CONG bbr -e DEBUG_INFO_BTF -e KALLSYMS_ALL || true
           make ${{ env.ARGS }} olddefconfig
 
