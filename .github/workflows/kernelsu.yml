@@ -1,56 +1,12 @@
-name: Build Kernels - KernelSU (Gadzhi ReSukiSU + SUSFS Edition)
+name: Build Kernels - Gadzhi Sultan Edition (KSU + SUSFS)
 
 on:
   workflow_dispatch:
 
 jobs:
-  Read-configuration:
-    name: 🐂 Parse *.config.json
-    runs-on: ubuntu-latest
-    outputs:
-      CONFIGS: ${{ steps.generate-matrix.outputs.CONFIGS }}
-      BUILD_DATE: ${{ steps.generate-builddate.outputs.BUILDDATE }}
-    steps:
-      - name: 😄 Checkout
-        uses: actions/checkout@v4
-
-      - name: 😆 Generate Matrix
-        id: generate-matrix
-        run: |
-          echo "CONFIGS<<EOF" >> $GITHUB_OUTPUT
-          jq -s '[.[][]]' Kernel/configs/*.config.json >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-
-      - name: ⏰ Set builddate
-        id: generate-builddate
-        run: echo "BUILDDATE=$(date +'%Y%m%d')" >> $GITHUB_OUTPUT
-
   Build-Kernel:
-    name: "🐎 Build kernel"
+    name: "🚀 Sultan Build"
     runs-on: ubuntu-22.04
-    needs:
-      - Read-configuration
-    strategy:
-      max-parallel: 4
-      fail-fast: false
-      matrix:
-        CONFIG: ${{ fromJSON(needs.Read-configuration.outputs.CONFIGS) }}
-    env:
-      WORKSPACE: ${{ github.workspace }}
-      BUILD_DATE: "${{ needs.Read-configuration.outputs.BUILD_DATE }}"
-      KERNEL_NAME: ${{ matrix.CONFIG.kernelSource.name }}
-      KERNEL_REPO: ${{ matrix.CONFIG.kernelSource.repo }}
-      KERNEL_BRANCH: ${{ matrix.CONFIG.kernelSource.branch }}
-      KERNEL_DEVICE: ${{ matrix.CONFIG.kernelSource.device }}
-      KERNEL_DEFCONFIG_PATH: ${{ matrix.CONFIG.kernelSource.defconfig }}
-      ENABLE_CCACHE: ${{ matrix.CONFIG.enableCcache }}
-      USE_ANYKERNEL3: ${{ matrix.CONFIG.AnyKernel3.use }}
-      CONFIRM_RELEASE: ${{ matrix.CONFIG.AnyKernel3.release }}
-      ENABLE_KERNELSU: ${{ matrix.CONFIG.enableKernelSU }}
-      ENABLE_KERNELSU_SFS: ${{ matrix.CONFIG.KernelSUSFS.enable }}
-      ENABLE_LXC: ${{ matrix.CONFIG.enableLXC }}
-      OUT_DIR: "${{ github.workspace }}/out"
-      CCACHE_DIR: "${{ github.workspace }}/ccache"
     steps:
       - name: 📐 Set swap to 10G
         uses: pierotofy/set-swap-space@master
@@ -63,162 +19,88 @@ jobs:
       - name: ⭐ Install prerequisites
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl git wget ccache python3 python3-dev jq
-          sudo apt-get install -y build-essential bc gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi libssl-dev libfl-dev
-          sudo apt-get install -y zip unzip tar gzip bzip2 bison gperf zlib1g-dev libxml2-utils flex
-
-      - name: 🚄 Setup ccache
-        if: ${{ env.ENABLE_CCACHE == 'true' }}
-        id: hash
-        run: |
-          mkdir -p ${{ env.OUT_DIR }}
-          ccache -o compression=false -o cache_dir=${{ env.CCACHE_DIR }}
-          echo "HASH=$(echo -n '${{ toJSON(matrix.config) }}' | openssl dgst -sha1 | awk '{print $2}')" >> $GITHUB_OUTPUT
-
-      - name: 🚅 Cache ccache & output
-        env:
-          HASH: ${{ steps.hash.outputs.HASH }}
-        if: ${{ env.ENABLE_CCACHE == 'true' }}
-        uses: actions/cache@v3
-        with:
-          path: |
-            ${{ env.OUT_DIR }}
-            ${{ env.CCACHE_DIR }}
-          key: cache-${{ env.KERNEL_NAME }}-${{env.HASH}}-${{ env.BUILD_DATE }}
-          restore-keys: |
-            cache-${{ env.KERNEL_NAME }}-${{env.HASH}}-
+          sudo apt-get install -y curl git wget ccache python3 python3-dev jq zip unzip tar flex bison libssl-dev bc libelf-dev
 
       - name: 🌟 Clone kernel source
         run: |
-          git clone --depth=1 -j $(nproc) --branch ${{ env.KERNEL_BRANCH }} ${{ env.KERNEL_REPO }} ${{ env.KERNEL_NAME }}
+          # Прямое скачивание твоего Vermeer
+          git clone --depth=1 -j $(nproc) --branch vermeer-v-oss https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git vermeer-kernel
 
-      - name: 💫 Get toolchains
-        env:
-          toolchains: "${{ toJSON(matrix.CONFIG.toolchains) }}"
+      - name: 💫 Get Toolchain (Clang 17)
         run: |
-          toolchains_num="$(echo $toolchains | jq 'length')"
-          for ((i=0;i<toolchains_num;i++)); do
-            toolchain=$(echo $toolchains | jq -r ".[$i]")
-            toolchain_name=$(echo $toolchain | jq -r ".name")
-            if echo $toolchain | jq -e 'has("url")' > /dev/null; then
-              toolchain_url=$(echo $toolchain | jq -r ".url")
-              mkdir -p "$toolchain_name"
-              wget "$toolchain_url"
-              filename="${toolchain_url##*/}"
-              tar zxvf "$filename" -C "$toolchain_name" || unzip "$filename" -d "$toolchain_name" || true
-              rm $filename
-            fi
-            jq -r ".binaryEnv[] | tostring" <<< "$toolchain" | while read -r subPath; do
-              echo "${{ env.WORKSPACE }}/$toolchain_name/$subPath" >> $GITHUB_PATH
-            done
-          done
-
-      - name: 😎 Set build args
-        id: generate-args
-        env:
-          PARAMS: "${{ toJSON(matrix.CONFIG.params) }}"
-        run: |
-          ARCH=$(echo $PARAMS | jq -r ".ARCH")
-          CC=$(echo $PARAMS | jq -r ".CC")
-          args="-j$(nproc) O=${{ env.OUT_DIR }} ARCH=$ARCH"
-          while read -r externalCommand; do
-            key=$(echo "$externalCommand" | cut -d= -f1)
-            value=$(echo "$externalCommand" | cut -d= -f2)
-            args="$args $key=$value"
-          done < <(jq -r '.externalCommands | to_entries[] | "\(.key)=\(.value)"' <<< "$PARAMS")
-          echo "ARCH=$ARCH" >> $GITHUB_OUTPUT
-          echo "ARGS=$args" >> $GITHUB_OUTPUT
+          mkdir -p clang-17
+          wget https://github.com/llvm/llvm-project/releases/download/llvmorg-17.0.6/clang+llvm-17.0.6-x86_64-linux-gnu-ubuntu-22.04.tar.xz
+          tar -xvf clang+llvm-17.0.6-x86_64-linux-gnu-ubuntu-22.04.tar.xz -C clang-17 --strip-components=1
+          echo "$(pwd)/clang-17/bin" >> $GITHUB_PATH
 
       # ═══════════════════════════════════════════════════════════
-      # НАША МАГИЯ: Авто-устранение "призраков" Xiaomi (Ghost Buster)
+      # МАГИЯ: Зачистка "призраков" и фикс atomic64
       # ═══════════════════════════════════════════════════════════
-      - name: 😋 Nuclear Ghost Buster
-        working-directory: ${{ env.KERNEL_NAME }}
+      - name: 😋 Sultan & Ghost Buster Cleanup
+        working-directory: vermeer-kernel
         run: |
-          echo "Запуск глубокой очистки битых ссылок..."
-          
-          # 1. Удаляем все физические папки xiaomi
+          # 1. Удаляем битые ссылки Xiaomi
           find . -type d -name "*xiaomi*" -exec rm -rf {} + || true
-          
-          # 2. Удаляем все строки со словом 'xiaomi' и 'hwid' из Makeфайлов
-          find . -name "Makefile" -o -name "Kbuild" -o -name "Kconfig*" | xargs sed -i '/xiaomi/d' || true
-          find . -name "Makefile" -o -name "Kbuild" -o -name "Kconfig*" | xargs sed -i '/hwid/d' || true
-          
-          # 3. ИНТЕЛЛЕКТУАЛЬНЫЙ СКАНЕР: Находит все команды 'source' в Kconfig
-          # Если файл, который хотят подключить, не существует — удаляем эту команду.
-          find . -name "Kconfig*" | while read config_file; do
-            grep "source " "$config_file" | cut -d'"' -f2 | while read source_path; do
-              if [ ! -f "$source_path" ]; then
-                echo "Удаляю битую ссылку: $source_path в файле $config_file"
-                sed -i "\|source \"$source_path\"|d" "$config_file"
-              fi
+          find . -name "Kconfig*" | while read f; do
+            grep "source " "$f" | cut -d'"' -f2 | while read path; do
+              [ ! -f "$path" ] && sed -i "\|source \"$path\"|d" "$f"
             done
           done
-          echo "✅ Очистка завершена. Все 'призраки' изгнаны."
+          # 2. Фикс ошибки atomic64_t (форсируем 64 бита)
+          sed -i '1i #define __REALLY_GET_ATOMIC64__' include/linux/atomic.h || true
+          echo "✅ Система очищена и подготовлена к 64-битной плавке"
 
-      - name: 😋 Setup ReSukiSU
-        working-directory: ${{ env.KERNEL_NAME }}
-        env:
-          ARCH: ${{ steps.generate-args.outputs.ARCH }}
-        if: ${{ env.ENABLE_KERNELSU == 'true' }}
+      - name: 😋 Setup ReSukiSU (Bypass)
+        working-directory: vermeer-kernel
         run: |
-          rm -rf drivers/kernelsu || true
           git clone --depth=1 https://github.com/ReSukiSU/ReSukiSU.git ksutmp
           mkdir -p drivers/kernelsu
           cp -a ksutmp/kernel/. drivers/kernelsu/
           sed -i 's/$(error You should use ReSukiSU.*/$(info Bypassed)/g' drivers/kernelsu/Kbuild
-          echo "obj-y += kernelsu/" >> drivers/Makefile
+          grep -q "kernelsu" drivers/Makefile || echo "obj-y += kernelsu/" >> drivers/Makefile
           sed -i '/endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
-          echo "CONFIG_KSU=y" >> arch/${{ env.ARCH }}/configs/${{ env.KERNEL_DEFCONFIG_PATH }}
 
-      - name: 😋 Setup KSU SUSFS 2.10
-        working-directory: ${{ env.KERNEL_NAME }}
-        env:
-          ARCH: ${{ steps.generate-args.outputs.ARCH }}
-          SFS_BRANCH: ${{ matrix.CONFIG.KernelSUSFS.branches }}
-        if: ${{ env.ENABLE_KERNELSU == 'true' && env.ENABLE_KERNELSU_SFS == 'true' }}
+      - name: 😋 Setup SUSFS 2.10
+        working-directory: vermeer-kernel
         run: |
-          git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git -b "${{ env.SFS_BRANCH }}" susfs_patches
+          git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android14-5.15 susfs_patches
           SUSFS_PATCH=$(ls susfs_patches/kernel_patches/50_add_susfs_in_*.patch | head -n 1)
-          patch -p1 --forward < "$SUSFS_PATCH" || true
+          patch -p1 < "$SUSFS_PATCH" || true
           cp -a susfs_patches/kernel_patches/fs/. fs/
           cp -a susfs_patches/kernel_patches/include/linux/. include/linux/
-          cd drivers/kernelsu && patch -p1 --forward < "../../susfs_patches/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" || true
-          cd ../..
-          echo "CONFIG_KSU_SUSFS=y" >> arch/${{ env.ARCH }}/configs/${{ env.KERNEL_DEFCONFIG_PATH }}
-          echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> arch/${{ env.ARCH }}/configs/${{ env.KERNEL_DEFCONFIG_PATH }}
-          echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y" >> arch/${{ env.ARCH }}/configs/${{ env.KERNEL_DEFCONFIG_PATH }}
-          echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y" >> arch/${{ env.ARCH }}/configs/${{ env.KERNEL_DEFCONFIG_PATH }}
+          cd drivers/kernelsu && patch -p1 < "../../susfs_patches/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" || true
 
-      - name: 👍 Start building the kernel
-        working-directory: ${{ env.KERNEL_NAME }}
-        env:
-          ARGS: ${{ steps.generate-args.outputs.ARGS }}
+      - name: 👍 Start building the kernel (Sultan Mode)
+        working-directory: vermeer-kernel
         run: |
-          export KBUILD_BUILD_HOST=Github-Action
-          export KBUILD_BUILD_USER=$(echo ${{ github.actor }} | tr A-Z a-z)
-          make ${{ env.ARGS }} ${{ env.KERNEL_DEFCONFIG_PATH }}
-          make ${{ env.ARGS }} olddefconfig
-          make ${{ env.ARGS }}
+          export ARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CC=clang
+          
+          # Создаем конфиг
+          make O=out ARCH=arm64 vermeer_defconfig
+          
+          # СУЛТАНОВСКИЕ ОПТИМИЗАЦИИ (Вырезаем дебаг)
+          ./scripts/config --file out/.config -d DEBUG_INFO -d GCOV_KERNEL -d KASAN -d KCSAN -d STACKTRACE
+          ./scripts/config --file out/.config -e CONFIG_64BIT -e TCP_CONG_BBR -e CONFIG_KSU -e CONFIG_KSU_SUSFS
+          
+          make O=out ARCH=arm64 olddefconfig
+          make O=out ARCH=arm64 -j$(nproc)
 
       - name: 💛 Upload Image
         uses: actions/upload-artifact@v4
-        env:
-          ARCH: ${{ steps.generate-args.outputs.ARCH }}
         with:
-          name: ${{ env.KERNEL_NAME }}-${{ env.BUILD_DATE }}-Image
-          path: ${{ env.OUT_DIR }}/arch/${{ env.ARCH }}/boot/Image
+          name: Sultan-Kernel-Vermeer
+          path: vermeer-kernel/out/arch/arm64/boot/Image
 
       - name: ⏰ Pack Anykernel3
-        if: ${{ env.USE_ANYKERNEL3 == 'true' }}
         run: |
-          git clone --depth=1 https://github.com/WildPlusKernel/AnyKernel3.git -b gki-2.0 AnyKernel3
-          cp -f ${{ env.OUT_DIR }}/arch/arm64/boot/Image ./AnyKernel3/
-          cd AnyKernel3/ && zip -q -r "../AnyKernel3-${{ env.KERNEL_NAME }}.zip" *
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git
+          cp vermeer-kernel/out/arch/arm64/boot/Image ./AnyKernel3/
+          cd AnyKernel3 && zip -r ../Sultan-Vermeer-KSU-SUSFS.zip *
 
-      - name: "💾 Upload AnyKernel3"
+      - name: 💾 Final Artifact
         uses: actions/upload-artifact@v4
-        if: ${{ env.USE_ANYKERNEL3 == 'true' }}
         with:
-          name: AnyKernel3-${{ env.KERNEL_NAME }}-${{ env.BUILD_DATE }}
-          path: AnyKernel3-*.zip
+          name: Gadzhi-Sultan-Edition-ZIP
+          path: Sultan-Vermeer-KSU-SUSFS.zip
