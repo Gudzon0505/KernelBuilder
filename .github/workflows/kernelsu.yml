@@ -63,13 +63,9 @@ jobs:
       - name: ⭐ Install prerequisites
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl git ftp lftp wget libarchive-tools ccache python2 python2-dev python3
-          sudo apt-get install -y pngcrush schedtool dpkg-dev liblz4-tool make optipng maven dwarves device-tree-compiler 
-          sudo apt-get install -y libc6-dev-i386 libelf-dev lib32ncurses5-dev libx11-dev lib32z-dev libgl1-mesa-dev xsltproc
-          sudo apt-get install -y libxml2-utils libbz2-dev libbz2-1.0 libghc-bzlib-dev squashfs-tools lzop flex tree
+          sudo apt-get install -y curl git wget ccache python3 python3-dev jq
           sudo apt-get install -y build-essential bc gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi libssl-dev libfl-dev
-          sudo apt-get install -y pwgen libswitch-perl policycoreutils minicom libxml-sax-base-perl libxml-simple-perl 
-          sudo apt-get install -y zip unzip tar gzip bzip2 rar unrar llvm g++-multilib bison gperf zlib1g-dev automake
+          sudo apt-get install -y zip unzip tar gzip bzip2 bison gperf zlib1g-dev libxml2-utils flex
 
       - name: 🚄 Setup ccache
         if: ${{ env.ENABLE_CCACHE == 'true' }}
@@ -77,7 +73,6 @@ jobs:
         run: |
           mkdir -p ${{ env.OUT_DIR }}
           ccache -o compression=false -o cache_dir=${{ env.CCACHE_DIR }}
-          echo $(echo -n '${{ toJSON(matrix.config) }}' | openssl dgst -sha1 | awk '{print $2}')
           echo "HASH=$(echo -n '${{ toJSON(matrix.config) }}' | openssl dgst -sha1 | awk '{print $2}')" >> $GITHUB_OUTPUT
 
       - name: 🚅 Cache ccache & output
@@ -91,13 +86,11 @@ jobs:
             ${{ env.CCACHE_DIR }}
           key: cache-${{ env.KERNEL_NAME }}-${{env.HASH}}-${{ env.BUILD_DATE }}
           restore-keys: |
-            cache-${{ env.KERNEL_NAME }}-${{env.HASH}}-${{ env.BUILD_DATE }}
             cache-${{ env.KERNEL_NAME }}-${{env.HASH}}-
-            cache-${{ env.KERNEL_NAME }}-
 
       - name: 🌟 Clone kernel source
         run: |
-          git clone --recursive --depth=1 -j $(nproc) --branch ${{ env.KERNEL_BRANCH }} ${{ env.KERNEL_REPO }} ${{ env.KERNEL_NAME }}
+          git clone --depth=1 -j $(nproc) --branch ${{ env.KERNEL_BRANCH }} ${{ env.KERNEL_REPO }} ${{ env.KERNEL_NAME }}
 
       - name: 💫 Get toolchains
         env:
@@ -112,14 +105,8 @@ jobs:
               mkdir -p "$toolchain_name"
               wget "$toolchain_url"
               filename="${toolchain_url##*/}"
-              case "$filename" in
-                *.tar.gz) tar zxvf "$filename" -C "$toolchain_name" ;;
-              esac
+              tar zxvf "$filename" -C "$toolchain_name" || unzip "$filename" -d "$toolchain_name" || true
               rm $filename
-            else
-              toolchain_repo=$(echo $toolchain | jq -r ".repo")
-              toolchain_branch=$(echo $toolchain | jq -r ".branch")
-              git clone --recursive --depth=1 -j $(nproc) --branch $toolchain_branch $toolchain_repo $toolchain_name
             fi
             jq -r ".binaryEnv[] | tostring" <<< "$toolchain" | while read -r subPath; do
               echo "${{ env.WORKSPACE }}/$toolchain_name/$subPath" >> $GITHUB_PATH
@@ -130,67 +117,60 @@ jobs:
         id: generate-args
         env:
           PARAMS: "${{ toJSON(matrix.CONFIG.params) }}"
-          THREAD: $(nproc --all)
         run: |
           ARCH=$(echo $PARAMS | jq -r ".ARCH")
           CC=$(echo $PARAMS | jq -r ".CC")
-          args="-j${{ env.THREAD }} O=${{ env.OUT_DIR }} ARCH=$ARCH"
-          if [ -n "$CC" ]; then
-            if [[ "$CC" == *"/"* ]]; then CC=${{ env.WORKSPACE }}/$CC; fi
-            if [ ${{ env.ENABLE_CCACHE }} = true ]; then args="$args CC=\"ccache $CC\""; else args="$args CC=$CC"; fi
-          fi
+          args="-j$(nproc) O=${{ env.OUT_DIR }} ARCH=$ARCH"
           while read -r externalCommand; do
             key=$(echo "$externalCommand" | cut -d= -f1)
             value=$(echo "$externalCommand" | cut -d= -f2)
-            if [[ "$value" == *"/"* ]]; then value="${{ env.WORKSPACE }}/$value"; fi
             args="$args $key=$value"
           done < <(jq -r '.externalCommands | to_entries[] | "\(.key)=\(.value)"' <<< "$PARAMS")
           echo "ARCH=$ARCH" >> $GITHUB_OUTPUT
           echo "ARGS=$args" >> $GITHUB_OUTPUT
 
       # ═══════════════════════════════════════════════════════════
-      # НАША МАГИЯ: Тотальная зачистка Xiaomi и HWID
+      # НАША МАГИЯ: Авто-устранение "призраков" Xiaomi (Ghost Buster)
       # ═══════════════════════════════════════════════════════════
-      - name: 😋 Xiaomi & HWID Total Cleanup
+      - name: 😋 Nuclear Ghost Buster
         working-directory: ${{ env.KERNEL_NAME }}
         run: |
-          # 1. Удаляем физическую папку
-          rm -rf drivers/xiaomi
-          # 2. Удаляем упоминания 'xiaomi' из Makefile и Kconfig
-          find drivers/ -name "Makefile" -o -name "Kbuild" -o -name "Kconfig" | xargs sed -i '/xiaomi/d' || true
-          # 3. ТОЧЕЧНОЕ УДАЛЕНИЕ HWID (то, на чем мы упали)
-          sed -i '/hwid/d' drivers/misc/Kconfig || true
-          # 4. Проверка на другие битые ссылки в drivers/misc
-          sed -i '/source "drivers\/misc\/hwid\/Kconfig"/d' drivers/misc/Kconfig || true
-          echo "✅ Все хвосты Xiaomi и hwid зачищены под ноль"
+          echo "Запуск глубокой очистки битых ссылок..."
+          
+          # 1. Удаляем все физические папки xiaomi
+          find . -type d -name "*xiaomi*" -exec rm -rf {} + || true
+          
+          # 2. Удаляем все строки со словом 'xiaomi' и 'hwid' из Makeфайлов
+          find . -name "Makefile" -o -name "Kbuild" -o -name "Kconfig*" | xargs sed -i '/xiaomi/d' || true
+          find . -name "Makefile" -o -name "Kbuild" -o -name "Kconfig*" | xargs sed -i '/hwid/d' || true
+          
+          # 3. ИНТЕЛЛЕКТУАЛЬНЫЙ СКАНЕР: Находит все команды 'source' в Kconfig
+          # Если файл, который хотят подключить, не существует — удаляем эту команду.
+          find . -name "Kconfig*" | while read config_file; do
+            grep "source " "$config_file" | cut -d'"' -f2 | while read source_path; do
+              if [ ! -f "$source_path" ]; then
+                echo "Удаляю битую ссылку: $source_path в файле $config_file"
+                sed -i "\|source \"$source_path\"|d" "$config_file"
+              fi
+            done
+          done
+          echo "✅ Очистка завершена. Все 'призраки' изгнаны."
 
-      # ═══════════════════════════════════════════════════════════
-      # НАША МАГИЯ: ReSukiSU (Bypass Check)
-      # ═══════════════════════════════════════════════════════════
       - name: 😋 Setup ReSukiSU
         working-directory: ${{ env.KERNEL_NAME }}
         env:
           ARCH: ${{ steps.generate-args.outputs.ARCH }}
         if: ${{ env.ENABLE_KERNELSU == 'true' }}
         run: |
-          if [ -d "./KernelSU" ]; then rm -rf "./KernelSU"; fi
-          if [ -d "./drivers/kernelsu" ]; then rm -rf "./drivers/kernelsu"; fi
-
+          rm -rf drivers/kernelsu || true
           git clone --depth=1 https://github.com/ReSukiSU/ReSukiSU.git ksutmp
           mkdir -p drivers/kernelsu
           cp -a ksutmp/kernel/. drivers/kernelsu/
-          
-          # Отключаем проверку сабмодуля (уже проверено, работает)
-          sed -i 's/$(error You should use ReSukiSU.*/$(info Bypassed ReSukiSU Check)/g' drivers/kernelsu/Kbuild
-          
-          grep -q "kernelsu" drivers/Makefile || echo "obj-y += kernelsu/" >> drivers/Makefile
-          grep -q "kernelsu" drivers/Kconfig || sed -i '/endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
-          
+          sed -i 's/$(error You should use ReSukiSU.*/$(info Bypassed)/g' drivers/kernelsu/Kbuild
+          echo "obj-y += kernelsu/" >> drivers/Makefile
+          sed -i '/endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
           echo "CONFIG_KSU=y" >> arch/${{ env.ARCH }}/configs/${{ env.KERNEL_DEFCONFIG_PATH }}
 
-      # ═══════════════════════════════════════════════════════════
-      # НАША МАГИЯ: SUSFS 2.10
-      # ═══════════════════════════════════════════════════════════
       - name: 😋 Setup KSU SUSFS 2.10
         working-directory: ${{ env.KERNEL_NAME }}
         env:
@@ -199,21 +179,16 @@ jobs:
         if: ${{ env.ENABLE_KERNELSU == 'true' && env.ENABLE_KERNELSU_SFS == 'true' }}
         run: |
           git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git -b "${{ env.SFS_BRANCH }}" susfs_patches
-          
           SUSFS_PATCH=$(ls susfs_patches/kernel_patches/50_add_susfs_in_*.patch | head -n 1)
           patch -p1 --forward < "$SUSFS_PATCH" || true
-          
           cp -a susfs_patches/kernel_patches/fs/. fs/
           cp -a susfs_patches/kernel_patches/include/linux/. include/linux/
-          
           cd drivers/kernelsu && patch -p1 --forward < "../../susfs_patches/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" || true
           cd ../..
-
           echo "CONFIG_KSU_SUSFS=y" >> arch/${{ env.ARCH }}/configs/${{ env.KERNEL_DEFCONFIG_PATH }}
           echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> arch/${{ env.ARCH }}/configs/${{ env.KERNEL_DEFCONFIG_PATH }}
           echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y" >> arch/${{ env.ARCH }}/configs/${{ env.KERNEL_DEFCONFIG_PATH }}
           echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y" >> arch/${{ env.ARCH }}/configs/${{ env.KERNEL_DEFCONFIG_PATH }}
-          echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y" >> arch/${{ env.ARCH }}/configs/${{ env.KERNEL_DEFCONFIG_PATH }}
 
       - name: 👍 Start building the kernel
         working-directory: ${{ env.KERNEL_NAME }}
@@ -222,14 +197,8 @@ jobs:
         run: |
           export KBUILD_BUILD_HOST=Github-Action
           export KBUILD_BUILD_USER=$(echo ${{ github.actor }} | tr A-Z a-z)
-          
-          # Сначала применяем конфиг, только потом собираем
           make ${{ env.ARGS }} ${{ env.KERNEL_DEFCONFIG_PATH }}
-          
-          # Опции маскировки
-          ./scripts/config --file out/.config -e TCP_CONG_BBR --set-str DEFAULT_TCP_CONG bbr -e DEBUG_INFO_BTF -e KALLSYMS_ALL || true
           make ${{ env.ARGS }} olddefconfig
-
           make ${{ env.ARGS }}
 
       - name: 💛 Upload Image
@@ -239,42 +208,17 @@ jobs:
         with:
           name: ${{ env.KERNEL_NAME }}-${{ env.BUILD_DATE }}-Image
           path: ${{ env.OUT_DIR }}/arch/${{ env.ARCH }}/boot/Image
-          if-no-files-found: ignore
-          retention-days: 7
 
       - name: ⏰ Pack Anykernel3
         if: ${{ env.USE_ANYKERNEL3 == 'true' }}
-        env:
-          PARAMS: "${{ toJSON(matrix.CONFIG.AnyKernel3) }}"
-          ARCH: ${{ steps.generate-args.outputs.ARCH }}
-          ANYKERNEL3_FILE: "${{ env.WORKSPACE }}/AnyKernel3-${{ env.KERNEL_NAME }}-${{ env.BUILD_DATE }}"
         run: |
-          if echo -n '${{ env.PARAMS }}' | jq -e 'has("custom")' > /dev/null; then
-            CUSTOM_ANYKERNEL3=$(echo -n '${{ env.PARAMS }}' | jq -r ".custom")
-            ANYKERNEL_REPO=$(echo $CUSTOM_ANYKERNEL3 | jq -r ".repo")
-            ANYKERNEL_BRANCH=$(echo $CUSTOM_ANYKERNEL3 | jq -r ".branch")
-            git clone --recursive --depth=1 -j $(nproc) --branch $ANYKERNEL_BRANCH $ANYKERNEL_REPO AnyKernel3
-          else
-            git clone --recursive --depth=1 -j $(nproc) https://github.com/osm0sis/AnyKernel3 AnyKernel3
-            sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AnyKernel3/anykernel.sh
-            sed -i 's!BLOCK=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot;!BLOCK=auto;!g' AnyKernel3/anykernel.sh
-            sed -i 's/is_slot_device=0;/is_slot_device=auto;/g' AnyKernel3/anykernel.sh
-          fi
+          git clone --depth=1 https://github.com/WildPlusKernel/AnyKernel3.git -b gki-2.0 AnyKernel3
+          cp -f ${{ env.OUT_DIR }}/arch/arm64/boot/Image ./AnyKernel3/
+          cd AnyKernel3/ && zip -q -r "../AnyKernel3-${{ env.KERNEL_NAME }}.zip" *
 
-          if [ -e "${{ env.OUT_DIR }}/arch/${{ env.ARCH }}/boot/Image.gz-dtb" ]; then
-            cp -f ${{ env.OUT_DIR }}/arch/${{ env.ARCH }}/boot/Image.gz-dtb ./AnyKernel3/
-          elif [ -e "${{ env.OUT_DIR }}/arch/${{ env.ARCH }}/boot/Image" ]; then
-            cp -f ${{ env.OUT_DIR }}/arch/${{ env.ARCH }}/boot/Image ./AnyKernel3/
-          fi
-
-          cd AnyKernel3/
-          zip -q -r "${{ env.ANYKERNEL3_FILE }}.zip" *
-
-      - name: "💾 Upload AnyKernel3 image"
-        env:
-          ANYKERNEL3_FILE: "AnyKernel3-${{ env.KERNEL_NAME }}-${{ env.BUILD_DATE }}"
+      - name: "💾 Upload AnyKernel3"
         uses: actions/upload-artifact@v4
         if: ${{ env.USE_ANYKERNEL3 == 'true' }}
         with:
-          name: "${{ env.ANYKERNEL3_FILE }}"
-          path: AnyKernel3/*
+          name: AnyKernel3-${{ env.KERNEL_NAME }}-${{ env.BUILD_DATE }}
+          path: AnyKernel3-*.zip
