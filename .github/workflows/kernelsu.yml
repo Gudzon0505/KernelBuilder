@@ -23,8 +23,8 @@ jobs:
 
       - name: 🌟 Clone kernel source
         run: |
-          # Прямое скачивание твоего Vermeer
-          git clone --depth=1 -j $(nproc) --branch vermeer-v-oss https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git vermeer-kernel
+          # Исправленная официальная ветка Xiaomi для Vermeer
+          git clone --depth=1 -j $(nproc) --branch bsp-vermeer-t-oss https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git vermeer-kernel
 
       - name: 💫 Get Toolchain (Clang 17)
         run: |
