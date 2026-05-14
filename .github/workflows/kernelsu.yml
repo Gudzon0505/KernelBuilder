@@ -1,84 +1,6 @@
-name: Build Kernels - Gadzhi Sultan Edition (KSU + SUSFS)
-
-on:
-  workflow_dispatch:
-
-jobs:
-  Build-Kernel:
-    name: "🚀 Sultan Build"
-    runs-on: ubuntu-24.04 # Оптимизировано окружение
-    steps:
-      - name: 📐 Set swap to 10G
-        uses: pierotofy/set-swap-space@master
-        with:
-          swap-size-gb: 10
-
-      - name: 😄 Checkout
-        uses: actions/checkout@v4
-
-      - name: ⭐ Install prerequisites
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y curl git wget ccache python3 python3-dev jq zip unzip tar flex bison libssl-dev bc libelf-dev \
-          gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf # Фикс: добавлены GCC тулчейны для CROSS_COMPILE
-
-      - name: 🌟 Clone kernel source
-        run: |
-          git clone --depth=1 -j $(nproc) --branch bsp-vermeer-t-oss https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git vermeer-kernel
-
-      - name: 💫 Get Toolchain (Clang 17)
-        run: |
-          mkdir -p clang-17
-          wget https://github.com/llvm/llvm-project/releases/download/llvmorg-17.0.6/clang+llvm-17.0.6-x86_64-linux-gnu-ubuntu-22.04.tar.xz
-          tar -xvf clang+llvm-17.0.6-x86_64-linux-gnu-ubuntu-22.04.tar.xz -C clang-17 --strip-components=1
-          echo "$(pwd)/clang-17/bin" >> $GITHUB_PATH
-
-      - name: 😋 Sultan & Ghost Buster Cleanup
-        working-directory: vermeer-kernel
-        run: |
-          set +e 
-          echo "[*] Safe Kconfig cleanup sequence initiated..."
-          
-          # Безопасное удаление битых инклудов Kconfig БЕЗ удаления папок драйверов
-          find . -name "Kconfig*" -type f | while read f; do
-            grep "^source " "$f" | cut -d'"' -f2 | while read path; do
-              if [ -n "$path" ] && [ ! -f "$path" ]; then
-                echo "Removing dead source: $path in $f"
-                sed -i "s|source \"$path\"||g" "$f"
-              fi
-            done
-          done
-          
-          # Патч атомарных операций
-          sed -i '1i #define __REALLY_GET_ATOMIC64__' include/linux/atomic.h || true
-          exit 0
-
-      - name: 😋 Setup ReSukiSU (Bypass)
-        working-directory: vermeer-kernel
-        run: |
-          git clone --depth=1 https://github.com/ReSukiSU/ReSukiSU.git ksutmp
-          mkdir -p drivers/kernelsu
-          cp -a ksutmp/kernel/. drivers/kernelsu/
-          sed -i 's/$(error You should use ReSukiSU.*/$(info Bypassed)/g' drivers/kernelsu/Kbuild
-          
-          # Безопасный инжект
-          grep -q "kernelsu" drivers/Makefile || echo "obj-y += kernelsu/" >> drivers/Makefile
-          grep -q "drivers/kernelsu/Kconfig" drivers/Kconfig || echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
-
-      - name: 😋 Setup SUSFS 2.10
-        working-directory: vermeer-kernel
-        run: |
-          git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android14-5.15 susfs_patches
-          SUSFS_PATCH=$(ls susfs_patches/kernel_patches/50_add_susfs_in_*.patch | head -n 1)
-          patch -p1 < "$SUSFS_PATCH" || true
-          cp -a susfs_patches/kernel_patches/fs/. fs/
-          cp -a susfs_patches/kernel_patches/include/linux/. include/linux/
-          cd drivers/kernelsu && patch -p1 < "../../susfs_patches/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" || true
-
       - name: 👍 Start building the kernel (Sultan Mode)
         working-directory: vermeer-kernel
         run: |
-          # Фикс: Использование LLVM=1 для предотвращения вызовов GNU ld
           MAKE_ARGS=(
             O=out
             ARCH=arm64
@@ -89,9 +11,21 @@ jobs:
             CROSS_COMPILE_COMPAT=arm-linux-gnueabihf-
           )
           
-          make "${MAKE_ARGS[@]}" vermeer_defconfig
+          echo "[*] Searching for the correct defconfig..."
+          # Ищем конфиги vermeer, xaga или базовый mt6895. Берем первый найденный и обрезаем путь.
+          ACTUAL_DEFCONFIG=$(find arch/arm64/configs -type f \( -name "*vermeer*defconfig" -o -name "*xaga*defconfig" -o -name "*mt6895*defconfig" \) | head -n 1 | sed 's|.*arch/arm64/configs/||')
           
-          # Оптимизации Sultan
+          if [ -z "$ACTUAL_DEFCONFIG" ]; then
+            echo "[!] Dynamic scan failed. Forcing default vendor/vermeer_defconfig"
+            ACTUAL_DEFCONFIG="vendor/vermeer_defconfig"
+          fi
+          
+          echo "[+] Target defconfig resolved to: $ACTUAL_DEFCONFIG"
+          
+          # Создаем конфиг с найденным именем
+          make "${MAKE_ARGS[@]}" "$ACTUAL_DEFCONFIG"
+          
+          # СУЛТАНОВСКИЕ ОПТИМИЗАЦИИ (Вырезаем дебаг)
           ./scripts/config --file out/.config -d DEBUG_INFO -d GCOV_KERNEL -d KASAN -d KCSAN -d STACKTRACE
           ./scripts/config --file out/.config -e CONFIG_64BIT -e TCP_CONG_BBR -e CONFIG_KSU -e CONFIG_KSU_SUSFS
           
@@ -99,27 +33,3 @@ jobs:
           
           echo "[*] Kernel compilation..."
           make "${MAKE_ARGS[@]}" -j$(nproc)
-
-      - name: 💛 Upload Image
-        uses: actions/upload-artifact@v4
-        with:
-          name: Sultan-Kernel-Vermeer
-          path: vermeer-kernel/out/arch/arm64/boot/Image
-
-      - name: ⏰ Pack Anykernel3
-        run: |
-          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git
-          cp vermeer-kernel/out/arch/arm64/boot/Image ./AnyKernel3/
-          cd AnyKernel3
-          
-          # Фикс: Настройка Anykernel под vermeer (иначе кирпич/ошибка)
-          sed -i 's/device.name1=.*/device.name1=vermeer/g' anykernel.sh
-          sed -i 's/device.name2=.*/device.name2=xaga/g' anykernel.sh
-          
-          zip -r ../Sultan-Vermeer-KSU-SUSFS.zip * -x .git README.md *placeholder
-
-      - name: 💾 Final Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: Gadzhi-Sultan-Edition-ZIP
-          path: Sultan-Vermeer-KSU-SUSFS.zip
