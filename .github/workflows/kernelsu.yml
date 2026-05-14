@@ -6,7 +6,7 @@ on:
 jobs:
   Build-Kernel:
     name: "🚀 Sultan Build"
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04 # Оптимизировано окружение
     steps:
       - name: 📐 Set swap to 10G
         uses: pierotofy/set-swap-space@master
@@ -19,7 +19,8 @@ jobs:
       - name: ⭐ Install prerequisites
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl git wget ccache python3 python3-dev jq zip unzip tar flex bison libssl-dev bc libelf-dev
+          sudo apt-get install -y curl git wget ccache python3 python3-dev jq zip unzip tar flex bison libssl-dev bc libelf-dev \
+          gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf # Фикс: добавлены GCC тулчейны для CROSS_COMPILE
 
       - name: 🌟 Clone kernel source
         run: |
@@ -32,31 +33,24 @@ jobs:
           tar -xvf clang+llvm-17.0.6-x86_64-linux-gnu-ubuntu-22.04.tar.xz -C clang-17 --strip-components=1
           echo "$(pwd)/clang-17/bin" >> $GITHUB_PATH
 
-      # ═══════════════════════════════════════════════════════════
-      # МАГИЯ: Пуленепробиваемая зачистка "призраков" (Без паники)
-      # ═══════════════════════════════════════════════════════════
       - name: 😋 Sultan & Ghost Buster Cleanup
         working-directory: vermeer-kernel
         run: |
-          # Выключаем режим паники GitHub
           set +e 
+          echo "[*] Safe Kconfig cleanup sequence initiated..."
           
-          echo "Начинаем мягкую зачистку..."
-          find . -type d -name "*xiaomi*" -exec rm -rf {} + 2>/dev/null
-          
-          for f in $(find . -name "Kconfig*" 2>/dev/null); do
-            grep "source " "$f" 2>/dev/null | cut -d'"' -f2 | while read path; do
+          # Безопасное удаление битых инклудов Kconfig БЕЗ удаления папок драйверов
+          find . -name "Kconfig*" -type f | while read f; do
+            grep "^source " "$f" | cut -d'"' -f2 | while read path; do
               if [ -n "$path" ] && [ ! -f "$path" ]; then
-                sed -i "\|source \"$path\"|d" "$f"
+                echo "Removing dead source: $path in $f"
+                sed -i "s|source \"$path\"||g" "$f"
               fi
             done
           done
           
-          # Фикс ошибки atomic64_t
+          # Патч атомарных операций
           sed -i '1i #define __REALLY_GET_ATOMIC64__' include/linux/atomic.h || true
-          
-          echo "✅ Система очищена!"
-          # Заставляем GitHub считать шаг успешным в любом случае
           exit 0
 
       - name: 😋 Setup ReSukiSU (Bypass)
@@ -66,8 +60,10 @@ jobs:
           mkdir -p drivers/kernelsu
           cp -a ksutmp/kernel/. drivers/kernelsu/
           sed -i 's/$(error You should use ReSukiSU.*/$(info Bypassed)/g' drivers/kernelsu/Kbuild
+          
+          # Безопасный инжект
           grep -q "kernelsu" drivers/Makefile || echo "obj-y += kernelsu/" >> drivers/Makefile
-          sed -i '/endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+          grep -q "drivers/kernelsu/Kconfig" drivers/Kconfig || echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
 
       - name: 😋 Setup SUSFS 2.10
         working-directory: vermeer-kernel
@@ -82,19 +78,27 @@ jobs:
       - name: 👍 Start building the kernel (Sultan Mode)
         working-directory: vermeer-kernel
         run: |
-          export ARCH=arm64
-          export CROSS_COMPILE=aarch64-linux-gnu-
-          export CC=clang
+          # Фикс: Использование LLVM=1 для предотвращения вызовов GNU ld
+          MAKE_ARGS=(
+            O=out
+            ARCH=arm64
+            CC=clang
+            LLVM=1
+            LLVM_IAS=1
+            CROSS_COMPILE=aarch64-linux-gnu-
+            CROSS_COMPILE_COMPAT=arm-linux-gnueabihf-
+          )
           
-          # Создаем конфиг
-          make O=out ARCH=arm64 vermeer_defconfig
+          make "${MAKE_ARGS[@]}" vermeer_defconfig
           
-          # СУЛТАНОВСКИЕ ОПТИМИЗАЦИИ (Вырезаем дебаг)
+          # Оптимизации Sultan
           ./scripts/config --file out/.config -d DEBUG_INFO -d GCOV_KERNEL -d KASAN -d KCSAN -d STACKTRACE
           ./scripts/config --file out/.config -e CONFIG_64BIT -e TCP_CONG_BBR -e CONFIG_KSU -e CONFIG_KSU_SUSFS
           
-          make O=out ARCH=arm64 olddefconfig
-          make O=out ARCH=arm64 -j$(nproc)
+          make "${MAKE_ARGS[@]}" olddefconfig
+          
+          echo "[*] Kernel compilation..."
+          make "${MAKE_ARGS[@]}" -j$(nproc)
 
       - name: 💛 Upload Image
         uses: actions/upload-artifact@v4
@@ -106,7 +110,13 @@ jobs:
         run: |
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git
           cp vermeer-kernel/out/arch/arm64/boot/Image ./AnyKernel3/
-          cd AnyKernel3 && zip -r ../Sultan-Vermeer-KSU-SUSFS.zip *
+          cd AnyKernel3
+          
+          # Фикс: Настройка Anykernel под vermeer (иначе кирпич/ошибка)
+          sed -i 's/device.name1=.*/device.name1=vermeer/g' anykernel.sh
+          sed -i 's/device.name2=.*/device.name2=xaga/g' anykernel.sh
+          
+          zip -r ../Sultan-Vermeer-KSU-SUSFS.zip * -x .git README.md *placeholder
 
       - name: 💾 Final Artifact
         uses: actions/upload-artifact@v4
