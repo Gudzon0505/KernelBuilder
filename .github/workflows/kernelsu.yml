@@ -84,12 +84,22 @@ jobs:
             CROSS_COMPILE_COMPAT=arm-linux-gnueabihf-
           )
           
+          echo "[*] ========================================="
+          echo "[*] DUMPING ALL AVAILABLE DEFCONFIGS:"
+          find arch/arm64/configs -type f -name "*defconfig" | sort
+          echo "[*] ========================================="
+          
           echo "[*] Searching for the correct defconfig..."
-          ACTUAL_DEFCONFIG=$(find arch/arm64/configs -type f \( -name "*vermeer*defconfig" -o -name "*xaga*defconfig" -o -name "*mt6895*defconfig" \) | head -n 1 | sed 's|.*arch/arm64/configs/||')
+          
+          ACTUAL_DEFCONFIG=$(find arch/arm64/configs -type f \( -iname "*vermeer*defconfig" -o -iname "*xaga*defconfig" -o -iname "*mt6895*defconfig" \) | head -n 1 | sed 's|.*arch/arm64/configs/||')
           
           if [ -z "$ACTUAL_DEFCONFIG" ]; then
-            echo "[!] Dynamic scan failed. Forcing default vendor/vermeer_defconfig"
-            ACTUAL_DEFCONFIG="vendor/vermeer_defconfig"
+            ACTUAL_DEFCONFIG=$(find arch/arm64/configs -type f -path "*/vendor/*defconfig" | head -n 1 | sed 's|.*arch/arm64/configs/||')
+          fi
+          
+          if [ -z "$ACTUAL_DEFCONFIG" ]; then
+            echo "[!] Specific vendor configs not found! Falling back to standard GKI."
+            ACTUAL_DEFCONFIG="gki_defconfig"
           fi
           
           echo "[+] Target defconfig resolved to: $ACTUAL_DEFCONFIG"
