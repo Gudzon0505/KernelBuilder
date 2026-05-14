@@ -1,0 +1,310 @@
+name: Build Kernels - Gadzhi Sultan Edition (KSU + SUSFS)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  Build-Kernel:
+    name: "🚀 Sultan Build"
+    runs-on: ubuntu-24.04
+    steps:
+      - name: 📐 Set swap to 10G
+        uses: pierotofy/set-swap-space@master
+        with:
+          swap-size-gb: 10
+
+      - name: 😄 Checkout
+        uses: actions/checkout@v4
+
+      - name: ⭐ Install prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl git wget ccache python3 python3-dev jq zip unzip tar flex bison libssl-dev bc libelf-dev gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf
+
+      - name: 🌟 Clone kernel source
+        run: |
+          git clone --depth=1 -j $(nproc) --branch bsp-vermeer-t-oss https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git vermeer-kernel
+
+      - name: 💫 Get Toolchain (Clang 17)
+        run: |
+          mkdir -p clang-17
+          wget -q https://github.com/llvm/llvm-project/releases/download/llvmorg-17.0.6/clang+llvm-17.0.6-x86_64-linux-gnu-ubuntu-22.04.tar.xz
+          tar -xf clang+llvm-17.0.6-x86_64-linux-gnu-ubuntu-22.04.tar.xz -C clang-17 --strip-components=1
+          rm clang+llvm-17.0.6-x86_64-linux-gnu-ubuntu-22.04.tar.xz
+          echo "$(pwd)/clang-17/bin" >> $GITHUB_PATH
+
+      - name: 😋 Safe Kconfig cleanup
+        working-directory: vermeer-kernel
+        run: |
+          echo "[*] Starting safe Kconfig cleanup sequence..."
+          
+          # Backup original Kconfig files
+          find . -name "Kconfig*" -type f -exec cp {} {}.bak \;
+          
+          # Remove dead source references safely
+          find . -name "Kconfig*" -type f | while read f; do
+            grep "^source " "$f" | cut -d'"' -f2 | while read path; do
+              if [ -n "$path" ] && [ ! -f "$path" ]; then
+                echo "[!] Removing dead source: $path in $f"
+                sed -i "/source \"$path\"/d" "$f"
+              fi
+            done
+          done
+          
+          # Add atomic64 definition if needed
+          if ! grep -q "__REALLY_GET_ATOMIC64__" include/linux/atomic.h 2>/dev/null; then
+            sed -i '1i #define __REALLY_GET_ATOMIC64__' include/linux/atomic.h || true
+          fi
+          
+          echo "[+] Kconfig cleanup completed"
+
+      - name: 😋 Setup KernelSU (Official Method)
+        working-directory: vermeer-kernel
+        run: |
+          echo "[*] Setting up KernelSU..."
+          
+          # Use official setup.sh from ReSukiSU
+          if curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash; then
+            echo "[+] KernelSU setup completed successfully"
+          else
+            echo "[!] Official setup failed, attempting manual setup..."
+            
+            # Manual fallback
+            git clone --depth=1 https://github.com/ReSukiSU/ReSukiSU.git ksutmp
+            mkdir -p drivers/kernelsu
+            
+            if [ -d "ksutmp/kernel" ]; then
+              cp -a ksutmp/kernel/. drivers/kernelsu/
+              echo "[+] KernelSU files copied"
+            else
+              echo "[!] KernelSU kernel directory not found"
+              exit 1
+            fi
+            
+            # Add to drivers Makefile
+            grep -q "kernelsu" drivers/Makefile || echo "obj-y += kernelsu/" >> drivers/Makefile
+            
+            # Add to drivers Kconfig
+            grep -q "drivers/kernelsu/Kconfig" drivers/Kconfig || echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
+            
+            rm -rf ksutmp
+          fi
+
+      - name: 😋 Setup SUSFS 2.10
+        working-directory: vermeer-kernel
+        run: |
+          echo "[*] Setting up SUSFS..."
+          
+          # Clone SUSFS repository
+          git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android14-5.15 susfs_patches
+          
+          if [ ! -d "susfs_patches" ]; then
+            echo "[!] SUSFS repository clone failed"
+            exit 1
+          fi
+          
+          # Find and apply SUSFS kernel patch
+          SUSFS_PATCH=$(find susfs_patches/kernel_patches -maxdepth 1 -name "*add_susfs*.patch" -type f | head -n 1)
+          
+          if [ -n "$SUSFS_PATCH" ] && [ -f "$SUSFS_PATCH" ]; then
+            echo "[*] Found SUSFS patch: $SUSFS_PATCH"
+            if patch -p1 --dry-run < "$SUSFS_PATCH" > /dev/null 2>&1; then
+              patch -p1 < "$SUSFS_PATCH"
+              echo "[+] SUSFS kernel patch applied"
+            else
+              echo "[!] SUSFS patch dry-run failed, skipping"
+            fi
+          else
+            echo "[!] No SUSFS patch found in expected location"
+          fi
+          
+          # Copy SUSFS filesystem modifications
+          if [ -d "susfs_patches/kernel_patches/fs" ]; then
+            cp -a susfs_patches/kernel_patches/fs/. fs/ 2>/dev/null || true
+            echo "[+] SUSFS fs modifications copied"
+          fi
+          
+          # Copy SUSFS headers
+          if [ -d "susfs_patches/kernel_patches/include/linux" ]; then
+            cp -a susfs_patches/kernel_patches/include/linux/. include/linux/ 2>/dev/null || true
+            echo "[+] SUSFS headers copied"
+          fi
+          
+          # Apply KernelSU SUSFS hook patch
+          if [ -d "drivers/kernelsu" ] && [ -f "susfs_patches/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" ]; then
+            cd drivers/kernelsu
+            patch -p1 < "../../susfs_patches/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" 2>/dev/null || true
+            cd ../..
+            echo "[+] KernelSU SUSFS hook applied"
+          fi
+          
+          echo "[+] SUSFS setup completed"
+
+      - name: 👍 Start building the kernel (Sultan Mode)
+        working-directory: vermeer-kernel
+        run: |
+          echo "[*] ========================================="
+          echo "[*] Starting kernel build process..."
+          echo "[*] ========================================="
+          
+          # Build arguments
+          MAKE_ARGS=(
+            O=out
+            ARCH=arm64
+            CC=clang
+            LLVM=1
+            LLVM_IAS=1
+            CROSS_COMPILE=aarch64-linux-gnu-
+            CROSS_COMPILE_COMPAT=arm-linux-gnueabihf-
+          )
+          
+          echo "[*] Available defconfigs:"
+          find arch/arm64/configs -type f -name "*defconfig" | sort
+          echo "[*] ========================================="
+          
+          # Find the correct defconfig
+          echo "[*] Searching for the correct defconfig..."
+          
+          ACTUAL_DEFCONFIG=""
+          
+          # Try vendor-specific configs first
+          ACTUAL_DEFCONFIG=$(find arch/arm64/configs -type f \( -iname "*vermeer*defconfig" -o -iname "*xaga*defconfig" -o -iname "*mt6895*defconfig" \) | head -n 1 | sed 's|.*arch/arm64/configs/||')
+          
+          # Fallback to vendor path
+          if [ -z "$ACTUAL_DEFCONFIG" ]; then
+            ACTUAL_DEFCONFIG=$(find arch/arm64/configs/vendor -type f -name "*defconfig" 2>/dev/null | head -n 1 | sed 's|.*arch/arm64/configs/||')
+          fi
+          
+          # Final fallback to standard GKI
+          if [ -z "$ACTUAL_DEFCONFIG" ]; then
+            echo "[!] Vendor-specific defconfig not found, using GKI"
+            ACTUAL_DEFCONFIG="gki_defconfig"
+          fi
+          
+          echo "[+] Using defconfig: $ACTUAL_DEFCONFIG"
+          
+          # Load defconfig
+          echo "[*] Loading defconfig..."
+          make "${MAKE_ARGS[@]}" "$ACTUAL_DEFCONFIG" || {
+            echo "[!] Failed to load defconfig"
+            exit 1
+          }
+          
+          # Disable debug and optimization options to save memory
+          echo "[*] Optimizing kernel config for build..."
+          ./scripts/config --file out/.config -d DEBUG_INFO -d GCOV_KERNEL -d KASAN -d KCSAN -d STACKTRACE
+          
+          # Use thin LTO instead of full to save memory and time
+          ./scripts/config --file out/.config -d LTO_CLANG_FULL
+          ./scripts/config --file out/.config -e LTO_CLANG_THIN
+          
+          # Enable KernelSU and related features
+          ./scripts/config --file out/.config \
+            -e CONFIG_64BIT \
+            -e CONFIG_KSU \
+            -e CONFIG_KSU_MANUAL_HOOK \
+            -e CONFIG_KSU_SUSFS \
+            -e CONFIG_THREAD_INFO_IN_TASK \
+            -e TCP_CONG_BBR
+          
+          echo "[*] Running olddefconfig..."
+          make "${MAKE_ARGS[@]}" olddefconfig || {
+            echo "[!] Failed to run olddefconfig"
+            exit 1
+          }
+          
+          # Start kernel compilation
+          echo "[*] Starting kernel compilation..."
+          echo "[*] Using $(nproc) CPU cores"
+          
+          if make "${MAKE_ARGS[@]}" -j$(nproc); then
+            echo "[+] Kernel compilation completed successfully"
+          else
+            echo "[!] Kernel compilation failed"
+            exit 1
+          fi
+
+      - name: 💛 Verify build artifacts
+        working-directory: vermeer-kernel
+        run: |
+          echo "[*] Verifying build artifacts..."
+          
+          if [ -f "out/arch/arm64/boot/Image" ]; then
+            echo "[+] Kernel Image found"
+            ls -lh out/arch/arm64/boot/Image
+          elif [ -f "out/arch/arm64/boot/Image.gz" ]; then
+            echo "[+] Kernel Image.gz found"
+            ls -lh out/arch/arm64/boot/Image.gz
+          else
+            echo "[!] Kernel Image not found!"
+            ls -la out/arch/arm64/boot/ || echo "Boot directory not found"
+            exit 1
+          fi
+
+      - name: 💛 Upload Image
+        uses: actions/upload-artifact@v4
+        with:
+          name: Sultan-Kernel-Vermeer
+          path: |
+            vermeer-kernel/out/arch/arm64/boot/Image
+            vermeer-kernel/out/arch/arm64/boot/Image.gz
+          if-no-files-found: warn
+
+      - name: ⏰ Pack Anykernel3
+        run: |
+          echo "[*] Packing AnyKernel3..."
+          
+          # Clone AnyKernel3
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git
+          
+          # Find kernel image
+          if [ -f "vermeer-kernel/out/arch/arm64/boot/Image" ]; then
+            cp vermeer-kernel/out/arch/arm64/boot/Image ./AnyKernel3/
+            echo "[+] Kernel Image copied"
+          elif [ -f "vermeer-kernel/out/arch/arm64/boot/Image.gz" ]; then
+            cp vermeer-kernel/out/arch/arm64/boot/Image.gz ./AnyKernel3/Image
+            echo "[+] Kernel Image.gz copied as Image"
+          else
+            echo "[!] No kernel image found"
+            exit 1
+          fi
+          
+          cd AnyKernel3
+          
+          # Configure for Xiaomi 14 (vermeer/xaga)
+          if [ -f "anykernel.sh" ]; then
+            sed -i 's/device.name1=.*/device.name1=vermeer/g' anykernel.sh
+            sed -i 's/device.name2=.*/device.name2=xaga/g' anykernel.sh
+            echo "[+] AnyKernel3 configured"
+          else
+            echo "[!] anykernel.sh not found"
+            exit 1
+          fi
+          
+          # Create zip package
+          echo "[*] Creating zip package..."
+          zip -r ../Sultan-Vermeer-KSU-SUSFS.zip * -x '.git/*' '.git' 'README.md' '*placeholder*' '.gitignore' '.github/*' 2>/dev/null
+          
+          echo "[+] AnyKernel3 packing completed"
+          ls -lh ../Sultan-Vermeer-KSU-SUSFS.zip
+
+      - name: 💾 Final Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Gadzhi-Sultan-Edition-ZIP
+          path: Sultan-Vermeer-KSU-SUSFS.zip
+          if-no-files-found: error
+
+      - name: 📢 Build Summary
+        if: always()
+        run: |
+          echo "===========================================" 
+          echo "  🚀 Build Summary"
+          echo "==========================================="
+          echo "Build completed at: $(date)"
+          echo "Kernel Source: Xiaomi 14 (Vermeer) - bsp-vermeer-t-oss"
+          echo "Toolchain: Clang 17.0.6"
+          echo "KernelSU: ReSukiSU (Latest)"
+          echo "SUSFS: 2.10 (gki-android14-5.15)"
+          echo "Target Device: Xiaomi 14 (vermeer/xaga)"
+          echo "==========================================="
