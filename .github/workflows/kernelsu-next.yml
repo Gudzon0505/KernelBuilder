@@ -2,11 +2,20 @@ name: Build Kernels - KernelSU (Gadzhi ReSukiSU + SUSFS Edition)
 
 on:
   workflow_dispatch:
+    inputs:
+      max_parallel:
+        description: "Max parallel builds"
+        default: "4"
+        required: false
+      retention_days:
+        description: "Artifact retention (days)"
+        default: "7"
+        required: false
 
 jobs:
   Read-configuration:
     name: 🐂 Parse *.config.json
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       CONFIGS: ${{ steps.generate-matrix.outputs.CONFIGS }}
       BUILD_DATE: ${{ steps.generate-builddate.outputs.BUILDDATE }}
@@ -18,7 +27,7 @@ jobs:
         id: generate-matrix
         run: |
           echo "CONFIGS<<EOF" >> $GITHUB_OUTPUT
-          jq -s '[.[][]]' Kernel/configs/*.config.json >> $GITHUB_OUTPUT
+          find Kernel/configs -name '*.config.json' -print0 | sort -z | xargs -0 jq -s '[.[][]]' >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
       - name: ⏰ Set builddate
@@ -27,11 +36,11 @@ jobs:
 
   Build-Kernel:
     name: "🐎 Build kernel"
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     needs:
       - Read-configuration
     strategy:
-      max-parallel: 4
+      max-parallel: ${{ fromJSON(github.event.inputs.max_parallel || '4') }}
       fail-fast: false
       matrix:
         CONFIG: ${{ fromJSON(needs.Read-configuration.outputs.CONFIGS) }}
@@ -53,7 +62,7 @@ jobs:
       CCACHE_DIR: "${{ github.workspace }}/ccache"
     steps:
       - name: 📐 Set swap to 10G
-        uses: pierotofy/set-swap-space@master
+        uses: pierotofy/set-swap-space@v1.0.0
         with:
           swap-size-gb: 10
 
@@ -63,13 +72,14 @@ jobs:
       - name: ⭐ Install prerequisites
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl git ftp lftp wget libarchive-tools ccache python2 python2-dev python3
-          sudo apt-get install -y pngcrush schedtool dpkg-dev liblz4-tool make optipng maven dwarves device-tree-compiler 
-          sudo apt-get install -y libc6-dev-i386 libelf-dev lib32ncurses5-dev libx11-dev lib32z-dev libgl1-mesa-dev xsltproc
-          sudo apt-get install -y libxml2-utils libbz2-dev libbz2-1.0 libghc-bzlib-dev squashfs-tools lzop flex tree
-          sudo apt-get install -y build-essential bc gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi libssl-dev libfl-dev
-          sudo apt-get install -y pwgen libswitch-perl policycoreutils minicom libxml-sax-base-perl libxml-simple-perl 
-          sudo apt-get install -y zip unzip tar gzip bzip2 rar unrar llvm g++-multilib bison gperf zlib1g-dev automake
+          sudo apt-get install -y --no-install-recommends \
+            bc bison bzip2 ccache curl flex git \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
+            zip unzip \
+            device-tree-compiler dwarves \
+            libelf-dev libssl-dev \
+            libarchive-tools liblz4-tool lzop \
+            make python3 python3-dev wget
 
       - name: 🚄 Setup ccache
         if: ${{ env.ENABLE_CCACHE == 'true' }}
@@ -77,49 +87,50 @@ jobs:
         run: |
           mkdir -p ${{ env.OUT_DIR }}
           ccache -o compression=false -o cache_dir=${{ env.CCACHE_DIR }}
-          echo $(echo -n '${{ toJSON(matrix.config) }}' | openssl dgst -sha1 | awk '{print $2}')
-          echo "HASH=$(echo -n '${{ toJSON(matrix.config) }}' | openssl dgst -sha1 | awk '{print $2}')" >> $GITHUB_OUTPUT
+          echo "HASH=$(echo -n '${{ toJSON(matrix.CONFIG) }}' | openssl dgst -sha1 | awk '{print $2}')" >> $GITHUB_OUTPUT
 
       - name: 🚅 Cache ccache & output
         env:
           HASH: ${{ steps.hash.outputs.HASH }}
         if: ${{ env.ENABLE_CCACHE == 'true' }}
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: |
             ${{ env.OUT_DIR }}
             ${{ env.CCACHE_DIR }}
-          key: cache-${{ env.KERNEL_NAME }}-${{env.HASH}}-${{ env.BUILD_DATE }}
+          key: cache-${{ env.KERNEL_NAME }}-${{ env.HASH }}-${{ env.BUILD_DATE }}
           restore-keys: |
-            cache-${{ env.KERNEL_NAME }}-${{env.HASH}}-${{ env.BUILD_DATE }}
-            cache-${{ env.KERNEL_NAME }}-${{env.HASH}}-
+            cache-${{ env.KERNEL_NAME }}-${{ env.HASH }}-${{ env.BUILD_DATE }}
+            cache-${{ env.KERNEL_NAME }}-${{ env.HASH }}-
             cache-${{ env.KERNEL_NAME }}-
 
       - name: 🌟 Clone kernel source
         run: |
-          git clone --recursive --depth=1 -j $(nproc) --branch ${{ env.KERNEL_BRANCH }} ${{ env.KERNEL_REPO }} ${{ env.KERNEL_NAME }}
+          git clone --recursive --depth=1 -j $(nproc) \
+            --branch ${{ env.KERNEL_BRANCH }} \
+            ${{ env.KERNEL_REPO }} \
+            ${{ env.KERNEL_NAME }}
 
       - name: 💫 Get toolchains
         env:
           toolchains: "${{ toJSON(matrix.CONFIG.toolchains) }}"
         run: |
           toolchains_num="$(echo $toolchains | jq 'length')"
-          for ((i=0;i<toolchains_num;i++)); do
+          for ((i=0; i<toolchains_num; i++)); do
             toolchain=$(echo $toolchains | jq -r ".[$i]")
             toolchain_name=$(echo $toolchain | jq -r ".name")
             if echo $toolchain | jq -e 'has("url")' > /dev/null; then
               toolchain_url=$(echo $toolchain | jq -r ".url")
               mkdir -p "$toolchain_name"
-              wget "$toolchain_url"
+              wget -q "$toolchain_url"
               filename="${toolchain_url##*/}"
-              case "$filename" in
-                *.tar.gz) tar zxvf "$filename" -C "$toolchain_name" ;;
-              esac
-              rm $filename
+              tar -xf "$filename" -C "$toolchain_name"
+              rm -f "$filename"
             else
               toolchain_repo=$(echo $toolchain | jq -r ".repo")
               toolchain_branch=$(echo $toolchain | jq -r ".branch")
-              git clone --recursive --depth=1 -j $(nproc) --branch $toolchain_branch $toolchain_repo $toolchain_name
+              git clone --recursive --depth=1 -j $(nproc) \
+                --branch "$toolchain_branch" "$toolchain_repo" "$toolchain_name"
             fi
             jq -r ".binaryEnv[] | tostring" <<< "$toolchain" | while read -r subPath; do
               echo "${{ env.WORKSPACE }}/$toolchain_name/$subPath" >> $GITHUB_PATH
@@ -130,14 +141,18 @@ jobs:
         id: generate-args
         env:
           PARAMS: "${{ toJSON(matrix.CONFIG.params) }}"
-          THREAD: $(nproc --all)
         run: |
+          THREAD=$(nproc --all)
           ARCH=$(echo $PARAMS | jq -r ".ARCH")
           CC=$(echo $PARAMS | jq -r ".CC")
-          args="-j${{ env.THREAD }} O=${{ env.OUT_DIR }} ARCH=$ARCH"
+          args="-j${THREAD} O=${{ env.OUT_DIR }} ARCH=${ARCH}"
           if [ -n "$CC" ]; then
             if [[ "$CC" == *"/"* ]]; then CC=${{ env.WORKSPACE }}/$CC; fi
-            if [ ${{ env.ENABLE_CCACHE }} = true ]; then args="$args CC=\"ccache $CC\""; else args="$args CC=$CC"; fi
+            if [ "${{ env.ENABLE_CCACHE }}" = "true" ]; then
+              args="$args CC=\"ccache $CC\""
+            else
+              args="$args CC=$CC"
+            fi
           fi
           while read -r externalCommand; do
             key=$(echo "$externalCommand" | cut -d= -f1)
@@ -145,8 +160,8 @@ jobs:
             if [[ "$value" == *"/"* ]]; then value="${{ env.WORKSPACE }}/$value"; fi
             args="$args $key=$value"
           done < <(jq -r '.externalCommands | to_entries[] | "\(.key)=\(.value)"' <<< "$PARAMS")
-          echo "ARCH=$ARCH" >> $GITHUB_OUTPUT
-          echo "ARGS=$args" >> $GITHUB_OUTPUT
+          echo "ARCH=${ARCH}" >> $GITHUB_OUTPUT
+          echo "ARGS=${args}" >> $GITHUB_OUTPUT
 
       # ═══════════════════════════════════════════════════════════
       # НАША МАГИЯ: ReSukiSU + Обход защиты
@@ -163,15 +178,17 @@ jobs:
           git clone --depth=1 https://github.com/ReSukiSU/ReSukiSU.git ksutmp
           mkdir -p drivers/kernelsu
           cp -a ksutmp/kernel/. drivers/kernelsu/
-          
+
           if [ -f "drivers/kernelsu/Kbuild" ]; then
-            sed -i 's/ifneq ($(shell cd $(KSU_SRC); git rev-parse --is-inside-work-tree 2>\/dev\/null),true)/ifneq (true,true)/g' drivers/kernelsu/Kbuild
+            sed -i 's/ifneq ($(shell cd $(KSU_SRC); git rev-parse --is-inside-work-tree 2>\/dev\/null),true)/ifneq (true,true)/g' \
+              drivers/kernelsu/Kbuild
           fi
-          
+
           grep -q "kernelsu" drivers/Makefile || echo "obj-y += kernelsu/" >> drivers/Makefile
-          grep -q "kernelsu" drivers/Kconfig || sed -i '/endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
-          
-          echo "CONFIG_KSU=y" >> arch/${{ env.ARCH }}/configs/${{ env.KERNEL_DEFCONFIG_PATH }}
+          grep -q "kernelsu" drivers/Kconfig || \
+            sed -i '/endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+
+          echo "CONFIG_KSU=y" >> "arch/${{ env.ARCH }}/configs/${{ env.KERNEL_DEFCONFIG_PATH }}"
 
       # ═══════════════════════════════════════════════════════════
       # НАША МАГИЯ: SUSFS 2.10
@@ -183,31 +200,107 @@ jobs:
           SFS_BRANCH: ${{ matrix.CONFIG.KernelSUSFS.branches }}
         if: ${{ env.ENABLE_KERNELSU == 'true' && env.ENABLE_KERNELSU_SFS == 'true' }}
         run: |
-          git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git -b "${{ env.SFS_BRANCH }}" susfs_patches
-          
+          git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git \
+            -b "${{ env.SFS_BRANCH }}" susfs_patches
+
           SUSFS_PATCH=$(ls susfs_patches/kernel_patches/50_add_susfs_in_*.patch | head -n 1)
           patch -p1 --forward < "$SUSFS_PATCH" || true
-          
+
           cp -a susfs_patches/kernel_patches/fs/. fs/
           cp -a susfs_patches/kernel_patches/include/linux/. include/linux/
-          
-          cd drivers/kernelsu && patch -p1 --forward < "../../susfs_patches/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" || true
+
+          cd drivers/kernelsu
+          patch -p1 --forward < \
+            "../../susfs_patches/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" || true
           cd ../..
 
-          echo "CONFIG_KSU_SUSFS=y" >> arch/${{ env.ARCH }}/configs/${{ env.KERNEL_DEFCONFIG_PATH }}
-          echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> arch/${{ env.ARCH }}/configs/${{ env.KERNEL_DEFCONFIG_PATH }}
-          echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y" >> arch/${{ env.ARCH }}/configs/${{ env.KERNEL_DEFCONFIG_PATH }}
-          echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y" >> arch/${{ env.ARCH }}/configs/${{ env.KERNEL_DEFCONFIG_PATH }}
-          echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y" >> arch/${{ env.ARCH }}/configs/${{ env.KERNEL_DEFCONFIG_PATH }}
+          DEFCONFIG="arch/${{ env.ARCH }}/configs/${{ env.KERNEL_DEFCONFIG_PATH }}"
+          echo "CONFIG_KSU_SUSFS=y"                         >> "$DEFCONFIG"
+          echo "CONFIG_KSU_SUSFS_SUS_PATH=y"                >> "$DEFCONFIG"
+          echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y"               >> "$DEFCONFIG"
+          echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y"             >> "$DEFCONFIG"
+          echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y" >> "$DEFCONFIG"
 
       - name: 😋 Setup LXC docker
         working-directory: ${{ env.KERNEL_NAME }}
         env:
-          DEFCONFIG: ${{ env.WORKSPACE }}/${{ env.KERNEL_NAME }}/arch/${{ steps.generate-args.outputs.ARCH }}/configs/${{env.KERNEL_DEFCONFIG_PATH}}
+          DEFCONFIG: ${{ env.WORKSPACE }}/${{ env.KERNEL_NAME }}/arch/${{ steps.generate-args.outputs.ARCH }}/configs/${{ env.KERNEL_DEFCONFIG_PATH }}
           ADD_DEFCONFIG: ${{ env.WORKSPACE }}/Kernel/LXC/LXC_defconfig
         if: ${{ env.ENABLE_LXC == 'true' }}
         run: |
-          for config in $(cat ${{ env.ADD_DEFCONFIG }}); do echo $config >> ${{ env.DEFCONFIG }}; done
+          while IFS= read -r config || [ -n "$config" ]; do
+            [ -n "$config" ] && echo "$config" >> "${{ env.DEFCONFIG }}"
+          done < "${{ env.ADD_DEFCONFIG }}"
+
+      # ═══════════════════════════════════════════════════════════
+      # PLUGIN MARKETPLACE
+      # ═══════════════════════════════════════════════════════════
+      - name: 🔌 Apply plugins from marketplace
+        working-directory: ${{ env.KERNEL_NAME }}
+        env:
+          ARCH: ${{ steps.generate-args.outputs.ARCH }}
+          PLUGINS: "${{ toJSON(matrix.CONFIG.plugins) }}"
+          MARKETPLACE: "${{ github.workspace }}/plugins/marketplace.json"
+        run: |
+          if [ "$PLUGINS" = "null" ] || [ "$PLUGINS" = "[]" ]; then
+            echo "No plugins configured, skipping."
+            exit 0
+          fi
+
+          plugin_count=$(echo "$PLUGINS" | jq 'length')
+          echo "Found $plugin_count plugin(s) to apply"
+
+          for ((i=0; i<plugin_count; i++)); do
+            plugin=$(echo "$PLUGINS" | jq -r ".[$i]")
+            plugin_id=$(echo "$plugin" | jq -r ".id")
+            plugin_enabled=$(echo "$plugin" | jq -r ".enabled // true")
+
+            if [ "$plugin_enabled" != "true" ]; then
+              echo "Plugin $plugin_id is disabled, skipping."
+              continue
+            fi
+
+            plugin_info=$(jq -r ".plugins[] | select(.id == \"$plugin_id\")" "$MARKETPLACE")
+
+            if [ -z "$plugin_info" ]; then
+              echo "WARNING: Plugin '$plugin_id' not found in marketplace, skipping."
+              continue
+            fi
+
+            plugin_repo=$(echo "$plugin_info" | jq -r ".repo")
+            plugin_branch=$(echo "$plugin_info" | jq -r ".branch // \"main\"")
+            plugin_name=$(echo "$plugin_info" | jq -r ".name")
+
+            echo "==> Applying plugin: $plugin_name ($plugin_id)"
+            git clone --depth=1 --branch "$plugin_branch" "$plugin_repo" "plugin_${plugin_id}"
+
+            if [ -f "plugin_${plugin_id}/apply.sh" ]; then
+              echo "Running apply.sh for $plugin_name..."
+              chmod +x "plugin_${plugin_id}/apply.sh"
+              KERNEL_DIR="$(pwd)" ARCH="$ARCH" DEFCONFIG="$KERNEL_DEFCONFIG_PATH" \
+                bash "plugin_${plugin_id}/apply.sh"
+            fi
+
+            if [ -d "plugin_${plugin_id}/patches" ]; then
+              for patch in plugin_${plugin_id}/patches/*.patch; do
+                [ -f "$patch" ] || continue
+                echo "Applying patch: $(basename "$patch")"
+                patch -p1 --forward < "$patch" || \
+                  echo "Warning: $(basename "$patch") may have already been applied"
+              done
+            fi
+
+            if [ -d "plugin_${plugin_id}/defconfig.d" ]; then
+              for cfg in plugin_${plugin_id}/defconfig.d/*.config; do
+                [ -f "$cfg" ] || continue
+                echo "Adding config fragment: $(basename "$cfg")"
+                cat "$cfg" >> "arch/$ARCH/configs/$KERNEL_DEFCONFIG_PATH"
+              done
+            fi
+
+            rm -rf "plugin_${plugin_id}"
+            echo "Plugin $plugin_name applied successfully."
+          done
 
       - name: 👍 Start building the kernel
         working-directory: ${{ env.KERNEL_NAME }}
@@ -215,7 +308,8 @@ jobs:
           ARGS: ${{ steps.generate-args.outputs.ARGS }}
         run: |
           export KBUILD_BUILD_HOST=Github-Action
-          export KBUILD_BUILD_USER=$(echo ${{ github.actor }} | tr A-Z a-z)
+          export KBUILD_BUILD_USER=$(echo "${{ github.actor }}" | tr '[:upper:]' '[:lower:]')
+          export KBUILD_BUILD_TIMESTAMP="$(git -C "${{ env.WORKSPACE }}/${{ env.KERNEL_NAME }}" log -1 --format=%cd --date=iso-strict)"
           make ${{ env.ARGS }} ${{ env.KERNEL_DEFCONFIG_PATH }}
           make ${{ env.ARGS }}
 
@@ -227,7 +321,7 @@ jobs:
           name: ${{ env.KERNEL_NAME }}-${{ env.BUILD_DATE }}-Image
           path: ${{ env.OUT_DIR }}/arch/${{ env.ARCH }}/boot/Image
           if-no-files-found: ignore
-          retention-days: 7
+          retention-days: ${{ github.event.inputs.retention_days || 7 }}
 
       - name: ⏰ Pack Anykernel3
         if: ${{ env.USE_ANYKERNEL3 == 'true' }}
@@ -240,28 +334,35 @@ jobs:
             CUSTOM_ANYKERNEL3=$(echo -n '${{ env.PARAMS }}' | jq -r ".custom")
             ANYKERNEL_REPO=$(echo $CUSTOM_ANYKERNEL3 | jq -r ".repo")
             ANYKERNEL_BRANCH=$(echo $CUSTOM_ANYKERNEL3 | jq -r ".branch")
-            git clone --recursive --depth=1 -j $(nproc) --branch $ANYKERNEL_BRANCH $ANYKERNEL_REPO AnyKernel3
+            git clone --recursive --depth=1 -j $(nproc) \
+              --branch "$ANYKERNEL_BRANCH" "$ANYKERNEL_REPO" AnyKernel3
           else
-            git clone --recursive --depth=1 -j $(nproc) https://github.com/osm0sis/AnyKernel3 AnyKernel3
+            git clone --recursive --depth=1 -j $(nproc) \
+              https://github.com/osm0sis/AnyKernel3 AnyKernel3
             sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AnyKernel3/anykernel.sh
-            sed -i 's!BLOCK=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot;!BLOCK=auto;!g' AnyKernel3/anykernel.sh
+            sed -i 's!BLOCK=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot;!BLOCK=auto;!g' \
+              AnyKernel3/anykernel.sh
             sed -i 's/is_slot_device=0;/is_slot_device=auto;/g' AnyKernel3/anykernel.sh
           fi
 
-          if [ -e "${{ env.OUT_DIR }}/arch/${{ env.ARCH }}/boot/Image.gz-dtb" ]; then
-            cp -f ${{ env.OUT_DIR }}/arch/${{ env.ARCH }}/boot/Image.gz-dtb ./AnyKernel3/
-          elif [ -e "${{ env.OUT_DIR }}/arch/${{ env.ARCH }}/boot/Image" ]; then
-            cp -f ${{ env.OUT_DIR }}/arch/${{ env.ARCH }}/boot/Image ./AnyKernel3/
+          IMAGE_GZ="${{ env.OUT_DIR }}/arch/${{ env.ARCH }}/boot/Image.gz-dtb"
+          IMAGE="${{ env.OUT_DIR }}/arch/${{ env.ARCH }}/boot/Image"
+          if [ -e "$IMAGE_GZ" ]; then
+            cp -f "$IMAGE_GZ" ./AnyKernel3/
+          elif [ -e "$IMAGE" ]; then
+            cp -f "$IMAGE" ./AnyKernel3/
+          else
+            echo "ERROR: No kernel image found!" && exit 1
           fi
 
           cd AnyKernel3/
-          zip -q -r "${{ env.ANYKERNEL3_FILE }}.zip" *
+          zip -q -r "${{ env.ANYKERNEL3_FILE }}.zip" \
+            . -x '.git/*' -x 'README.md' -x '*placeholder'
 
       - name: "💾 Upload AnyKernel3 image"
-        env:
-          ANYKERNEL3_FILE: "AnyKernel3-${{ env.KERNEL_NAME }}-${{ env.BUILD_DATE }}"
         uses: actions/upload-artifact@v4
         if: ${{ env.USE_ANYKERNEL3 == 'true' }}
         with:
-          name: "${{ env.ANYKERNEL3_FILE }}"
-          path: AnyKernel3/*
+          name: "AnyKernel3-${{ env.KERNEL_NAME }}-${{ env.BUILD_DATE }}"
+          path: "${{ env.WORKSPACE }}/AnyKernel3-${{ env.KERNEL_NAME }}-${{ env.BUILD_DATE }}.zip"
+          if-no-files-found: error

@@ -48,6 +48,12 @@
         "KernelSUSFS": {
             "enable": true,
             "branches": "gki-android13-5.15"
-        }
+        },
+        "plugins": [
+            {
+                "id": "p2p-4pda-edition",
+                "enabled": true
+            }
+        ]
     }
 ]
