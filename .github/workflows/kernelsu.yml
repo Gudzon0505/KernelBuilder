@@ -27,10 +27,10 @@ jobs:
 
       - name: 💫 Get Toolchain (Clang 17)
         run: |
-          mkdir -p clang-17
-          wget https://github.com/llvm/llvm-project/releases/download/llvmorg-17.0.6/clang+llvm-17.0.6-x86_64-linux-gnu-ubuntu-22.04.tar.xz
-          tar -xvf clang+llvm-17.0.6-x86_64-linux-gnu-ubuntu-22.04.tar.xz -C clang-17 --strip-components=1
-          echo "$(pwd)/clang-17/bin" >> $GITHUB_PATH
+          sudo apt-get install -y clang-17 lld-17 llvm-17
+          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-17 100
+          sudo update-alternatives --install /usr/bin/ld.lld ld.lld /usr/bin/lld-17 100
+          echo "/usr/lib/llvm-17/bin" >> $GITHUB_PATH
 
       - name: 😋 Sultan & Ghost Buster Cleanup
         working-directory: vermeer-kernel
