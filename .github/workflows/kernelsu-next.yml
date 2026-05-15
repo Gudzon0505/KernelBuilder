@@ -209,6 +209,75 @@ jobs:
         run: |
           for config in $(cat ${{ env.ADD_DEFCONFIG }}); do echo $config >> ${{ env.DEFCONFIG }}; done
 
+      # ═══════════════════════════════════════════════════════════
+      # PLUGIN MARKETPLACE
+      # ═══════════════════════════════════════════════════════════
+      - name: 🔌 Apply plugins from marketplace
+        working-directory: ${{ env.KERNEL_NAME }}
+        env:
+          ARCH: ${{ steps.generate-args.outputs.ARCH }}
+          PLUGINS: "${{ toJSON(matrix.CONFIG.plugins) }}"
+          MARKETPLACE: "${{ github.workspace }}/plugins/marketplace.json"
+        run: |
+          if [ "$PLUGINS" = "null" ] || [ "$PLUGINS" = "[]" ]; then
+            echo "No plugins configured, skipping."
+            exit 0
+          fi
+
+          plugin_count=$(echo "$PLUGINS" | jq 'length')
+          echo "Found $plugin_count plugin(s) to apply"
+
+          for ((i=0; i<plugin_count; i++)); do
+            plugin=$(echo "$PLUGINS" | jq -r ".[$i]")
+            plugin_id=$(echo "$plugin" | jq -r ".id")
+            plugin_enabled=$(echo "$plugin" | jq -r ".enabled // true")
+
+            if [ "$plugin_enabled" != "true" ]; then
+              echo "Plugin $plugin_id is disabled, skipping."
+              continue
+            fi
+
+            plugin_info=$(jq -r ".plugins[] | select(.id == \"$plugin_id\")" "$MARKETPLACE")
+
+            if [ -z "$plugin_info" ]; then
+              echo "WARNING: Plugin '$plugin_id' not found in marketplace, skipping."
+              continue
+            fi
+
+            plugin_repo=$(echo "$plugin_info" | jq -r ".repo")
+            plugin_branch=$(echo "$plugin_info" | jq -r ".branch // \"main\"")
+            plugin_name=$(echo "$plugin_info" | jq -r ".name")
+
+            echo "==> Applying plugin: $plugin_name ($plugin_id)"
+            git clone --depth=1 --branch "$plugin_branch" "$plugin_repo" "plugin_${plugin_id}"
+
+            if [ -f "plugin_${plugin_id}/apply.sh" ]; then
+              echo "Running apply.sh for $plugin_name..."
+              chmod +x "plugin_${plugin_id}/apply.sh"
+              KERNEL_DIR="$(pwd)" ARCH="$ARCH" DEFCONFIG="$KERNEL_DEFCONFIG_PATH" \
+              bash "plugin_${plugin_id}/apply.sh"
+            fi
+
+            if [ -d "plugin_${plugin_id}/patches" ]; then
+              for patch in plugin_${plugin_id}/patches/*.patch; do
+                [ -f "$patch" ] || continue
+                echo "Applying patch: $(basename "$patch")"
+                patch -p1 --forward < "$patch" || echo "Warning: $(basename "$patch") may have already been applied"
+              done
+            fi
+
+            if [ -d "plugin_${plugin_id}/defconfig.d" ]; then
+              for cfg in plugin_${plugin_id}/defconfig.d/*.config; do
+                [ -f "$cfg" ] || continue
+                echo "Adding config fragment: $(basename "$cfg")"
+                cat "$cfg" >> "arch/$ARCH/configs/$KERNEL_DEFCONFIG_PATH"
+              done
+            fi
+
+            rm -rf "plugin_${plugin_id}"
+            echo "Plugin $plugin_name applied successfully."
+          done
+
       - name: 👍 Start building the kernel
         working-directory: ${{ env.KERNEL_NAME }}
         env:

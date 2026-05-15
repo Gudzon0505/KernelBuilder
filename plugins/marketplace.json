@@ -1,0 +1,16 @@
+{
+    "version": "1.0",
+    "description": "KernelBuilder Plugin Marketplace — community-contributed kernel patches and modules",
+    "plugins": [
+        {
+            "id": "p2p-4pda-edition",
+            "name": "P2P 4PDA Edition",
+            "version": "1.0.0",
+            "description": "P2P networking patches and performance optimizations from the 4PDA community. Applies patches from patches/, runs apply.sh if present, and appends defconfig fragments from defconfig.d/.",
+            "author": "Gudzon0505",
+            "repo": "https://github.com/Gudzon0505/P2P-4PDA-edition.git",
+            "branch": "main",
+            "tags": ["networking", "p2p", "performance", "4pda"]
+        }
+    ]
+}
