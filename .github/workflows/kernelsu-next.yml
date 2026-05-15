@@ -2,6 +2,15 @@ name: Build Kernels - KernelSU (Gadzhi ReSukiSU + SUSFS Edition)
 
 on:
   workflow_dispatch:
+    inputs:
+      max_parallel:
+        description: "Max parallel builds"
+        default: "4"
+        required: false
+      retention_days:
+        description: "Artifact retention (days)"
+        default: "7"
+        required: false
 
 jobs:
   Read-configuration:
@@ -18,7 +27,7 @@ jobs:
         id: generate-matrix
         run: |
           echo "CONFIGS<<EOF" >> $GITHUB_OUTPUT
-          find Kernel/configs -name '*.config.json' | sort | xargs jq -s '[.[][]]' >> $GITHUB_OUTPUT
+          find Kernel/configs -name '*.config.json' -print0 | sort -z | xargs -0 jq -s '[.[][]]' >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
       - name: ⏰ Set builddate
@@ -31,7 +40,7 @@ jobs:
     needs:
       - Read-configuration
     strategy:
-      max-parallel: 4
+      max-parallel: ${{ fromJSON(github.event.inputs.max_parallel || '4') }}
       fail-fast: false
       matrix:
         CONFIG: ${{ fromJSON(needs.Read-configuration.outputs.CONFIGS) }}
@@ -219,9 +228,9 @@ jobs:
           ADD_DEFCONFIG: ${{ env.WORKSPACE }}/Kernel/LXC/LXC_defconfig
         if: ${{ env.ENABLE_LXC == 'true' }}
         run: |
-          for config in $(cat "${{ env.ADD_DEFCONFIG }}"); do
-            echo "$config" >> "${{ env.DEFCONFIG }}"
-          done
+          while IFS= read -r config || [ -n "$config" ]; do
+            [ -n "$config" ] && echo "$config" >> "${{ env.DEFCONFIG }}"
+          done < "${{ env.ADD_DEFCONFIG }}"
 
       # ═══════════════════════════════════════════════════════════
       # PLUGIN MARKETPLACE
@@ -312,7 +321,7 @@ jobs:
           name: ${{ env.KERNEL_NAME }}-${{ env.BUILD_DATE }}-Image
           path: ${{ env.OUT_DIR }}/arch/${{ env.ARCH }}/boot/Image
           if-no-files-found: ignore
-          retention-days: 7
+          retention-days: ${{ github.event.inputs.retention_days || 7 }}
 
       - name: ⏰ Pack Anykernel3
         if: ${{ env.USE_ANYKERNEL3 == 'true' }}
@@ -347,13 +356,13 @@ jobs:
           fi
 
           cd AnyKernel3/
-          zip -q -r "${{ env.ANYKERNEL3_FILE }}.zip" *
+          zip -q -r "${{ env.ANYKERNEL3_FILE }}.zip" \
+            . -x '.git/*' -x 'README.md' -x '*placeholder'
 
       - name: "💾 Upload AnyKernel3 image"
-        env:
-          ANYKERNEL3_FILE: "AnyKernel3-${{ env.KERNEL_NAME }}-${{ env.BUILD_DATE }}"
         uses: actions/upload-artifact@v4
         if: ${{ env.USE_ANYKERNEL3 == 'true' }}
         with:
-          name: "${{ env.ANYKERNEL3_FILE }}"
-          path: AnyKernel3/*
+          name: "AnyKernel3-${{ env.KERNEL_NAME }}-${{ env.BUILD_DATE }}"
+          path: "${{ env.WORKSPACE }}/AnyKernel3-${{ env.KERNEL_NAME }}-${{ env.BUILD_DATE }}.zip"
+          if-no-files-found: error

@@ -2,6 +2,15 @@ name: Build Kernels - Gadzhi Sultan Edition (KSU + SUSFS)
 
 on:
   workflow_dispatch:
+    inputs:
+      susfs_branch:
+        description: "SUSFS branch (e.g. gki-android14-5.15)"
+        default: "gki-android14-5.15"
+        required: false
+      kernel_branch:
+        description: "Kernel source branch"
+        default: "bsp-vermeer-t-oss"
+        required: false
 
 jobs:
   Build-Kernel:
@@ -32,7 +41,7 @@ jobs:
       - name: 🌟 Clone kernel source
         run: |
           git clone --depth=1 -j $(nproc) \
-            --branch bsp-vermeer-t-oss \
+            --branch "${{ github.event.inputs.kernel_branch || 'bsp-vermeer-t-oss' }}" \
             https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git \
             vermeer-kernel
 
@@ -77,7 +86,7 @@ jobs:
         working-directory: vermeer-kernel
         run: |
           git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git \
-            -b gki-android14-5.15 susfs_patches
+            -b "${{ github.event.inputs.susfs_branch || 'gki-android14-5.15' }}" susfs_patches
           SUSFS_PATCH=$(ls susfs_patches/kernel_patches/50_add_susfs_in_*.patch | head -n 1)
           patch -p1 < "$SUSFS_PATCH" || true
           cp -a susfs_patches/kernel_patches/fs/. fs/
