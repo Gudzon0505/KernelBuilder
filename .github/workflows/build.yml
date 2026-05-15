@@ -25,7 +25,7 @@ jobs:
             zip unzip \
             device-tree-compiler dwarves \
             libelf-dev libssl-dev \
-            liblz4-tool lzop \
+            libarchive-tools liblz4-tool lzop \
             make python3 python3-dev wget \
             jq
 

@@ -66,10 +66,9 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             bc bison bzip2 ccache curl flex git \
             gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
-            g++-multilib zip unzip \
+            zip unzip \
             device-tree-compiler dwarves \
-            libc6-dev-i386 libelf-dev libfl-dev libssl-dev \
-            lib32ncurses-dev lib32z1-dev \
+            libelf-dev libssl-dev \
             libarchive-tools liblz4-tool lzop \
             make python3 python3-dev wget
 
